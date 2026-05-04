@@ -1,3 +1,15 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+html,
+body {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+/* Improves tap behavior on mobile without changing layout */
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}

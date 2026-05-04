@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { supabase, Profile } from './lib/supabase';
 import { AuthForm } from './components/AuthForm';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ResidentDashboard } from './components/ResidentDashboard';
 import { UnapprovedResidentDashboard } from './components/UnapprovedResidentDashboard';
-import { ResidentLandingPage } from './components/ResidentLandingPage';
 import { PublicLandingPage } from './components/PublicLandingPage';
 
 function App() {
@@ -13,7 +12,32 @@ function App() {
   const [showLandingPage, setShowLandingPage] = useState(true);
   const [showAuthForm, setShowAuthForm] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [currentRoute, setCurrentRoute] = useState<'landing' | 'auth' | 'dashboard'>('landing');
+  const [_currentRoute, setCurrentRoute] = useState<'landing' | 'auth' | 'dashboard'>('landing');
+  const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 30 minutes in milliseconds
+  const INACTIVITY_TIME = 30 * 60 * 1000;
+
+  // Handle user inactivity logout
+  const resetInactivityTimer = () => {
+    // Clear existing timeout
+    if (inactivityTimeoutRef.current) {
+      clearTimeout(inactivityTimeoutRef.current);
+    }
+
+    // Only set timeout if user is logged in
+    if (profile) {
+      const newTimeout = setTimeout(async () => {
+        console.log('User inactive for 30 minutes. Logging out...');
+        await supabase.auth.signOut();
+        setProfile(null);
+        alert('Your session has expired due to inactivity. Please log in again.');
+        window.location.href = '/';
+      }, INACTIVITY_TIME);
+
+      inactivityTimeoutRef.current = newTimeout;
+    }
+  };
 
   useEffect(() => {
     // Check URL on load to restore state after refresh
@@ -84,6 +108,12 @@ function App() {
       const state = event.state;
       const currentPath = window.location.pathname;
       
+      // If state has 'dashboard' or 'admin' property, it's a tab change within dashboard
+      // Let the dashboard component handle it
+      if (state && (state.dashboard || state.admin)) {
+        return;
+      }
+      
       if (state) {
         if (state.route === 'auth') {
           setShowAuthForm(true);
@@ -98,14 +128,10 @@ function App() {
           setShowAuthForm(false);
           setShowLandingPage(true);
           setCurrentRoute('landing');
-          // Always ensure URL matches landing page when navigating to landing
-          window.history.replaceState({ route: 'landing' }, '', '/landing');
         } else {
           setShowAuthForm(false);
           setShowLandingPage(true);
           setCurrentRoute('landing');
-          // Always update URL to landing if not already there
-          window.history.replaceState({ route: 'landing' }, '', '/landing');
         }
       } else {
         // Check pathname if no state - likely coming back from dashboard
@@ -118,10 +144,6 @@ function App() {
           setShowAuthForm(false);
           setShowLandingPage(true);
           setCurrentRoute('landing');
-          // Always ensure URL is /landing for residents
-          if (profile && profile.role === 'resident' && profile.is_approved) {
-            window.history.replaceState({ route: 'landing' }, '', '/landing');
-          }
         }
       }
     };
@@ -133,6 +155,34 @@ function App() {
       window.removeEventListener('popstate', handlePopState);
     };
   }, []);
+
+  // Setup inactivity timeout on profile change
+  useEffect(() => {
+    if (profile) {
+      // Reset timer on mount
+      resetInactivityTimer();
+
+      // Add event listeners for user activity
+      const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+
+      const handleUserActivity = () => {
+        resetInactivityTimer();
+      };
+
+      events.forEach((event) => {
+        document.addEventListener(event, handleUserActivity);
+      });
+
+      return () => {
+        events.forEach((event) => {
+          document.removeEventListener(event, handleUserActivity);
+        });
+        if (inactivityTimeoutRef.current) {
+          clearTimeout(inactivityTimeoutRef.current);
+        }
+      };
+    }
+  }, [profile]);
 
   const checkUser = async () => {
     try {
@@ -221,20 +271,24 @@ function App() {
         }}
         initialMode={authMode}
         onBack={() => {
-          window.history.back();
+          setShowAuthForm(false);
+          setShowLandingPage(true);
+          setCurrentRoute('landing');
+          // Don’t rely on history.back(): direct /auth loads or shallow stacks won’t emit popstate.
+          window.history.replaceState({ route: 'landing' }, '', '/');
         }}
       />
     );
   }
 
-  if (profile.role === 'admin') {
+  if (profile && profile.role === 'admin') {
     return <AdminDashboard currentUser={profile} onLogout={handleLogout} />;
   }
 
   // Show landing page for approved residents first
-  if (profile.role === 'resident' && profile.is_approved && showLandingPage) {
+  if (profile && profile.role === 'resident' && profile.is_approved && showLandingPage) {
     // Ensure URL is /landing when showing landing page - use a separate effect
-    // We'll handle this in the popstate handler and when the component renders
+    // We'll handle this in the popstate handler and when                               the component renders
     const currentPath = window.location.pathname;
     if (currentPath !== '/landing' && currentPath !== '/auth') {
       // Update URL to /landing without adding to history (using replaceState)
@@ -242,21 +296,32 @@ function App() {
     }
     
     return (
-      <ResidentLandingPage
-        currentUser={profile}
-        onLogout={handleLogout}
-        onEnterDashboard={(tab) => {
+      <PublicLandingPage
+        onShowLogin={() => {
+          setAuthMode('login');
+          setShowAuthForm(true);
+          setCurrentRoute('auth');
+          window.history.pushState({ route: 'auth', mode: 'login' }, '', '/auth?mode=login');
+        }}
+        onShowRegister={() => {
           setShowLandingPage(false);
           setCurrentRoute('dashboard');
-          const tabParam = tab ? `?tab=${tab}` : '';
-          window.history.pushState({ route: 'dashboard', tab }, '', `/dashboard${tabParam}`);
+          const tabParam = '';
+          window.history.pushState({ route: 'dashboard', tab: undefined }, '', `/dashboard${tabParam}`);
         }}
+        currentUser={profile}
+        onEnterDashboard={() => {
+          setShowLandingPage(false);
+          setCurrentRoute('dashboard');
+          window.history.pushState({ route: 'dashboard', tab: undefined }, '', `/dashboard`);
+        }}
+        onLogout={handleLogout}
       />
     );
   }
 
   // Show unapproved resident dashboard for pending users
-  if (!profile.is_approved && profile.role !== 'admin') {
+  if (profile && !profile.is_approved && profile.role === 'resident') {
     return (
       <UnapprovedResidentDashboard
         currentUser={profile}
@@ -267,12 +332,17 @@ function App() {
   }
 
   // Show approved resident dashboard when they click "Enter Portal"
-  if (profile.role === 'resident' && profile.is_approved && !showLandingPage) {
+  if (profile && profile.role === 'resident' && profile.is_approved && !showLandingPage) {
     return (
       <ResidentDashboard
         currentUser={profile}
         onLogout={handleLogout}
         onProfileUpdate={handleProfileUpdate}
+        onBackToLanding={() => {
+          setShowLandingPage(true);
+          setCurrentRoute('landing');
+          window.history.pushState({ route: 'landing' }, '', '/landing');
+        }}
       />
     );
   }
