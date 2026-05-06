@@ -214,6 +214,12 @@ function App() {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setProfile(null);
+    setShowAuthForm(false);
+    setShowLandingPage(true);
+    setCurrentRoute('landing');
+    // Force root URL after logout to avoid 404 on static hosting when users were on /dashboard.
+    window.history.replaceState({ route: 'landing' }, '', '/');
+    window.location.assign(window.location.origin);
   };
 
   const handleProfileUpdate = (updatedProfile: Profile) => {
