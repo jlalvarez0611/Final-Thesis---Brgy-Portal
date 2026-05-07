@@ -52,7 +52,18 @@ export function PublicLandingPage({
   }, []);
 
   return (
-    <div className="min-h-screen bg-white">
+    <div
+      className="min-h-screen"
+      style={{
+        backgroundColor: '#f8fafc',
+        backgroundImage:
+          "linear-gradient(rgba(248, 250, 252, 0.9), rgba(248, 250, 252, 0.9)), image-set(url('/photos/background.jpg') type('image/jpeg'), url('/photos/background.png') type('image/png'), url('/photos/background.webp') type('image/webp'))",
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        backgroundAttachment: 'fixed',
+      }}
+    >
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md shadow-md border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

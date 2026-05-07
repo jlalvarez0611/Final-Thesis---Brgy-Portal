@@ -42,6 +42,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
   const [civilStatus, setCivilStatus] = useState('');
   const [nationality, setNationality] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
+  const [homeNo, setHomeNo] = useState('');
   const [emailReg, setEmailReg] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -121,6 +122,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
             civil_status: '',
             nationality: '',
             mobile_number: '',
+            home_no: '',
             id_image_path: null,
             selfie_image_path: null,
             role: 'resident',
@@ -208,19 +210,38 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
     let uploadedPaths: string[] = [];
 
     try {
-      // Use email and password for signup
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email: emailReg.trim(),
+      // Use email and password for signup. If Auth already has this email (but profile row was deleted),
+      // fall back to sign-in and continue profile creation for that existing Auth user.
+      const normalizedEmail = emailReg.trim();
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: normalizedEmail,
         password,
         options: {
           data: {
-            username: emailReg.trim(),
+            username: normalizedEmail,
           },
           emailRedirectTo: window.location.origin,
         },
       });
 
-      if (signUpError) throw signUpError;
+      let data = signUpData;
+      if (signUpError) {
+        const signUpMsg = String(signUpError.message || '');
+        if (signUpMsg.includes('User already registered') || signUpMsg.includes('already registered')) {
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: normalizedEmail,
+            password,
+          });
+          if (signInError) {
+            throw new Error(
+              'This email is already registered in Authentication. Use your existing password (or reset it) and try again so we can recreate your resident profile.'
+            );
+          }
+          data = { user: signInData.user, session: signInData.session };
+        } else {
+          throw signUpError;
+        }
+      }
 
       if (data.user) {
         createdUserId = data.user.id;
@@ -258,8 +279,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
         
         const profileData = {
           id: data.user.id,
-          email: emailReg.trim(),
-          username: emailReg.trim(),
+          email: normalizedEmail,
+          username: normalizedEmail,
           full_name: fullName,
           last_name: lastName,
           first_name: firstName,
@@ -271,6 +292,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
           civil_status: civilStatus,
           nationality,
           mobile_number: mobileNumber,
+          home_no: homeNo.trim(),
           id_image_path: idImagePath,
           selfie_image_path: selfieImagePath,
           role: 'resident',
@@ -303,6 +325,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
         setCivilStatus('');
         setNationality('');
         setMobileNumber('');
+        setHomeNo('');
         setEmailReg('');
         setPassword('');
         setConfirmPassword('');
@@ -864,6 +887,18 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
                   onChange={(e) => setMobileNumber(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   required
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-medium mb-2">
+                  Home No.
+                </label>
+                <input
+                  type="text"
+                  value={homeNo}
+                  onChange={(e) => setHomeNo(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                  placeholder="e.g. 123"
                 />
               </div>
 

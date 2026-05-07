@@ -56,8 +56,8 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    const resendKey = Deno.env.get('RESEND_API_KEY')?.trim();
-    const emailFrom = (Deno.env.get('EMAIL_FROM') || 'Barangay Portal <onboarding@resend.dev>').trim();
+    const brevoKey = Deno.env.get('BREVO_API_KEY')?.trim();
+    const emailFrom = (Deno.env.get('EMAIL_FROM') || 'Barangay Portal <noreply@yourdomain.com>').trim();
     const siteName = Deno.env.get('SITE_NAME') || 'Barangay Tubigan Florinda Community Portal';
 
     if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
@@ -67,8 +67,8 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!resendKey) {
-      return new Response(JSON.stringify({ error: 'RESEND_API_KEY is not set for this function' }), {
+    if (!brevoKey) {
+      return new Response(JSON.stringify({ error: 'BREVO_API_KEY is not set for this function' }), {
         status: 503,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -164,44 +164,58 @@ Deno.serve(async (req) => {
 
     const { subject, html } = buildEmailHtml(fullName, status, siteName);
 
-    const res = await fetch('https://api.resend.com/emails', {
+    // Parse the from address to extract name and email
+    const fromMatch = emailFrom.match(/^([^<]*?)\s*<([^>]+)>$/) || emailFrom.match(/^(.+)$/) && [null, '', emailFrom];
+    const senderName = fromMatch && fromMatch[1] ? fromMatch[1].trim() : 'Barangay Portal';
+    const senderEmail = fromMatch && fromMatch[2] ? fromMatch[2].trim() : emailFrom;
+
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${resendKey}`,
+        'api-key': brevoKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: emailFrom,
-        to: [toEmail],
+        sender: {
+          name: senderName,
+          email: senderEmail,
+        },
+        to: [
+          {
+            email: toEmail,
+            name: fullName || 'Resident',
+          },
+        ],
         subject,
-        html,
+        htmlContent: html,
       }),
     });
 
-    const resendBody = (await res.json().catch(() => ({}))) as {
+    const brevoBody = (await res.json().catch(() => ({}))) as {
       message?: string;
-      name?: string;
-      statusCode?: number;
+      code?: string;
+      messageId?: string;
     };
+
     if (!res.ok) {
-      console.error('Resend error:', res.status, resendBody);
-      const msg = resendBody?.message || '';
-      const isTestModeRestriction =
-        res.status === 403 && /verify a domain|only send testing emails/i.test(msg);
-      const hint = isTestModeRestriction
-        ? 'Resend is in test mode: you can only send to your Resend account email, or use a verified domain. Fix: (1) Open https://resend.com/domains and add + verify your domain. (2) Set Edge Function secret EMAIL_FROM to an address on that domain, e.g. Barangay Portal <noreply@yourdomain.com>. (3) Redeploy or secrets apply automatically on next invoke.'
-        : undefined;
+      console.error('Brevo error:', res.status, brevoBody);
+      const msg = brevoBody?.message || '';
+      const hint = res.status === 401
+        ? 'Invalid BREVO_API_KEY. Please check that your API key is correct.'
+        : res.status === 400
+          ? `Bad request: ${msg}`
+          : undefined;
       return new Response(
         JSON.stringify({
-          error: 'Resend API error',
-          details: resendBody,
+          error: 'Brevo API error',
+          details: brevoBody,
           ...(hint ? { hint } : {}),
         }),
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    return new Response(JSON.stringify({ ok: true, id: (resendBody as { id?: string }).id }), {
+    return new Response(JSON.stringify({ ok: true, id: brevoBody.messageId }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

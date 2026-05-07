@@ -22,6 +22,7 @@ interface Event {
   audience?: 'residents' | 'officials' | null;
   pinned?: boolean;
   pinned_at?: string | null;
+  is_hidden?: boolean;
   created_at: string;
 }
 
@@ -35,6 +36,7 @@ interface News {
   published: boolean;
   pinned?: boolean;
   pinned_at?: string | null;
+  is_hidden?: boolean;
   created_at: string;
 }
 
@@ -60,6 +62,7 @@ interface FacilityBooking {
   resident_id: string;
   booking_date: string;
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  is_hidden?: boolean;
   created_at: string;
   facilities?: { name: string };
   profiles?: { full_name: string; email: string; contact_number: string };
@@ -78,6 +81,7 @@ interface PaperRequest {
   requester_email?: string | null;
   requester_phone?: string | null;
   requester_address?: string | null;
+  is_hidden?: boolean;
   created_at: string;
   updated_at: string;
   profiles?: { full_name: string; email: string; contact_number: string };
@@ -92,6 +96,7 @@ interface TransparencyItem {
   published: boolean;
   pinned?: boolean;
   pinned_at?: string | null;
+  is_hidden?: boolean;
   created_at: string;
 }
 
@@ -99,6 +104,9 @@ interface AdminDashboardProps {
   currentUser: Profile;
   onLogout: () => void;
 }
+
+type HideManagedTab = 'events' | 'news' | 'facilityApprovals' | 'paperApprovals' | 'transparency';
+type VisibilityFilter = 'active' | 'hidden' | 'all';
 
 export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   const [residents, setResidents] = useState<Profile[]>([]);
@@ -185,6 +193,97 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   };
   const [verificationPreviewUrl, setVerificationPreviewUrl] = useState<string | null>(null);
   const [verificationPreviewTitle, setVerificationPreviewTitle] = useState<string>('');
+  const [bulkMode, setBulkMode] = useState<Record<HideManagedTab, boolean>>({
+    events: false,
+    news: false,
+    facilityApprovals: false,
+    paperApprovals: false,
+    transparency: false,
+  });
+  const [visibilityFilter, setVisibilityFilter] = useState<Record<HideManagedTab, VisibilityFilter>>({
+    events: 'active',
+    news: 'active',
+    facilityApprovals: 'active',
+    paperApprovals: 'active',
+    transparency: 'active',
+  });
+  const [selectedForHide, setSelectedForHide] = useState<Record<HideManagedTab, string[]>>({
+    events: [],
+    news: [],
+    facilityApprovals: [],
+    paperApprovals: [],
+    transparency: [],
+  });
+
+  const toggleSelected = (tab: HideManagedTab, id: string) => {
+    setSelectedForHide((prev) => ({
+      ...prev,
+      [tab]: prev[tab].includes(id) ? prev[tab].filter((x) => x !== id) : [...prev[tab], id],
+    }));
+  };
+
+  const toggleBulkMode = (tab: HideManagedTab) => {
+    setBulkMode((prev) => ({ ...prev, [tab]: !prev[tab] }));
+    setSelectedForHide((prev) => ({ ...prev, [tab]: [] }));
+  };
+
+  const cycleVisibilityFilter = (tab: HideManagedTab) => {
+    setVisibilityFilter((prev) => {
+      const current = prev[tab];
+      const next: VisibilityFilter =
+        current === 'active' ? 'hidden' : current === 'hidden' ? 'all' : 'active';
+      return { ...prev, [tab]: next };
+    });
+  };
+
+  const visibilityButtonLabel = (tab: HideManagedTab) => {
+    const mode = visibilityFilter[tab];
+    if (mode === 'active') return 'Showing active (click: hidden)';
+    if (mode === 'hidden') return 'Showing hidden (click: all)';
+    return 'Showing all (click: active)';
+  };
+
+  const visibilityIndicatorLabel = (tab: HideManagedTab) => {
+    const mode = visibilityFilter[tab];
+    if (mode === 'active') return 'Active only';
+    if (mode === 'hidden') return 'Hidden only';
+    return 'Active + Hidden';
+  };
+
+  const refreshManagedTab = async (tab: HideManagedTab) => {
+    if (tab === 'events') await fetchEvents();
+    if (tab === 'news') await fetchNews();
+    if (tab === 'facilityApprovals') await fetchFacilityBookings();
+    if (tab === 'paperApprovals') await fetchPaperRequests();
+    if (tab === 'transparency') await fetchTransparencyItems();
+  };
+
+  const bulkSetHidden = async (tab: HideManagedTab, hide: boolean) => {
+    const ids = selectedForHide[tab];
+    if (ids.length === 0) {
+      alert('Select at least one item first.');
+      return;
+    }
+    const tableByTab: Record<HideManagedTab, string> = {
+      events: 'events',
+      news: 'news',
+      facilityApprovals: 'facility_bookings',
+      paperApprovals: 'paper_requests',
+      transparency: 'transparency_items',
+    };
+    try {
+      const { error } = await supabase
+        .from(tableByTab[tab])
+        .update({ is_hidden: hide })
+        .in('id', ids);
+      if (error) throw error;
+      setSelectedForHide((prev) => ({ ...prev, [tab]: [] }));
+      await refreshManagedTab(tab);
+    } catch (err) {
+      console.error('Bulk hide/unhide failed:', err);
+      alert('Failed to move selected items. Run the SQL migration for is_hidden columns first.');
+    }
+  };
 
   const openVerificationImage = async (title: string, storagePath?: string | null) => {
     if (!storagePath) {
@@ -214,6 +313,14 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
     fetchFacilityBookings();
     fetchPaperRequests();
   }, []);
+
+  useEffect(() => {
+    fetchEvents();
+    fetchNews();
+    fetchTransparencyItems();
+    fetchFacilityBookings();
+    fetchPaperRequests();
+  }, [visibilityFilter]);
 
   // Initialize browser history and handle back/forward buttons
   useEffect(() => {
@@ -285,15 +392,23 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchEvents = async () => {
     try {
-      const { data, error } = await supabase
-        .from('events')
-        .select('*')
+      let query = supabase.from('events').select('*');
+      if (visibilityFilter.events === 'active') query = query.or('is_hidden.is.null,is_hidden.eq.false');
+      if (visibilityFilter.events === 'hidden') query = query.eq('is_hidden', true);
+      let res = await query
         .order('pinned', { ascending: false })
         .order('pinned_at', { ascending: false })
         .order('event_date', { ascending: false });
-
-      if (error) throw error;
-      setEvents(data || []);
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase
+          .from('events')
+          .select('*')
+          .order('pinned', { ascending: false })
+          .order('pinned_at', { ascending: false })
+          .order('event_date', { ascending: false });
+      }
+      if (res.error) throw res.error;
+      setEvents(res.data || []);
     } catch (error) {
       console.error('Error fetching events:', error);
     }
@@ -318,7 +433,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchNews = async () => {
     try {
-      const base = supabase.from('news').select('*');
+      let base = supabase.from('news').select('*');
+      if (visibilityFilter.news === 'active') base = base.or('is_hidden.is.null,is_hidden.eq.false');
+      if (visibilityFilter.news === 'hidden') base = base.eq('is_hidden', true);
 
       let res = await base
         .order('pinned', { ascending: false })
@@ -326,7 +443,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
         .order('created_at', { ascending: false });
 
       if (res.error && (res.error as any).code === '42703') {
-        res = await base.order('created_at', { ascending: false });
+        res = await supabase.from('news').select('*').order('created_at', { ascending: false });
       }
 
       if (res.error) throw res.error;
@@ -338,18 +455,27 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchTransparencyItems = async () => {
     try {
-      const { data, error } = await supabase
-        .from('transparency_items')
-        .select('*')
+      let query = supabase.from('transparency_items').select('*');
+      if (visibilityFilter.transparency === 'active') query = query.or('is_hidden.is.null,is_hidden.eq.false');
+      if (visibilityFilter.transparency === 'hidden') query = query.eq('is_hidden', true);
+      let res = await query
         .order('pinned', { ascending: false })
         .order('pinned_at', { ascending: false })
         .order('created_at', { ascending: false });
-      if (error) {
-        console.warn('Transparency items table not found:', error);
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase
+          .from('transparency_items')
+          .select('*')
+          .order('pinned', { ascending: false })
+          .order('pinned_at', { ascending: false })
+          .order('created_at', { ascending: false });
+      }
+      if (res.error) {
+        console.warn('Transparency items table not found:', res.error);
         setTransparencyItems([]);
         return;
       }
-      setTransparencyItems(data || []);
+      setTransparencyItems(res.data || []);
     } catch (error) {
       console.error('Error fetching transparency items:', error);
       setTransparencyItems([]);
@@ -375,9 +501,16 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
       alert('Please enter a title.');
       return;
     }
+    const manualLink = transparencyForm.file_url.trim();
+    const existingFileLink = editingTransparencyItem?.file_url?.trim() || '';
+    const hasAttachment = Boolean(transparencyPdfFile || manualLink || existingFileLink);
+    if (!hasAttachment) {
+      alert('Please upload a PDF file or provide a file link before saving.');
+      return;
+    }
     setTransparencyUploading(true);
     try {
-      let fileUrl: string | null = transparencyForm.file_url.trim() || null;
+      let fileUrl: string | null = manualLink || existingFileLink || null;
       if (transparencyPdfFile) {
         fileUrl = await uploadTransparencyPdf(transparencyPdfFile);
       }
@@ -484,7 +617,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchFacilityBookings = async () => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('facility_bookings')
         .select(`
           *,
@@ -499,15 +632,37 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
             contact_number
           )
         `)
-        .neq('status', 'cancelled') // Exclude cancelled bookings
-        .order('created_at', { ascending: false });
+        .neq('status', 'cancelled'); // Exclude cancelled bookings
+      if (visibilityFilter.facilityApprovals === 'active') query = query.or('is_hidden.is.null,is_hidden.eq.false');
+      if (visibilityFilter.facilityApprovals === 'hidden') query = query.eq('is_hidden', true);
+      let res = await query.order('created_at', { ascending: false });
 
-      if (error) {
-        console.warn('Facility bookings table not found:', error);
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase
+          .from('facility_bookings')
+          .select(`
+          *,
+          facilities:facility_id (
+            name,
+            description,
+            capacity
+          ),
+          profiles:resident_id (
+            full_name,
+            email,
+            contact_number
+          )
+        `)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false });
+      }
+
+      if (res.error) {
+        console.warn('Facility bookings table not found:', res.error);
         setFacilityBookings([]);
         return;
       }
-      setFacilityBookings(data || []);
+      setFacilityBookings(res.data || []);
     } catch (error) {
       console.error('Error fetching facility bookings:', error);
       setFacilityBookings([]);
@@ -567,7 +722,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchPaperRequests = async () => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('paper_requests')
         .select(`
           *,
@@ -576,15 +731,31 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
             email,
             contact_number
           )
-        `)
-        .order('created_at', { ascending: false });
+        `);
+      if (visibilityFilter.paperApprovals === 'active') query = query.or('is_hidden.is.null,is_hidden.eq.false');
+      if (visibilityFilter.paperApprovals === 'hidden') query = query.eq('is_hidden', true);
+      let res = await query.order('created_at', { ascending: false });
 
-      if (error) {
-        console.warn('Document requests table not found:', error);
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase
+          .from('paper_requests')
+          .select(`
+          *,
+          profiles:resident_id (
+            full_name,
+            email,
+            contact_number
+          )
+        `)
+          .order('created_at', { ascending: false });
+      }
+
+      if (res.error) {
+        console.warn('Document requests table not found:', res.error);
         setPaperRequests([]);
         return;
       }
-      setPaperRequests(data || []);
+      setPaperRequests(res.data || []);
     } catch (error) {
       console.error('Error fetching document requests:', error);
       setPaperRequests([]);
@@ -1097,50 +1268,49 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
     return 'pending';
   };
 
-  const sendAccountStatusEmail = async (targetUserId: string, status: 'approved' | 'rejected') => {
+  const sendStatusEmailViaWebhook = async (
+    email: string,
+    fullName: string,
+    status: 'approved' | 'rejected'
+  ) => {
+    const webhookUrl = import.meta.env.VITE_STATUS_EMAIL_WEBHOOK_URL;
+    if (!webhookUrl) {
+      console.warn('Missing VITE_STATUS_EMAIL_WEBHOOK_URL');
+      return;
+    }
+    if (webhookUrl.includes('/your-real-webhook-id')) {
+      console.warn('VITE_STATUS_EMAIL_WEBHOOK_URL is still using placeholder value');
+      return;
+    }
+    const safeName = fullName?.trim() || 'Resident';
+    const approved = status === 'approved';
+    const subject = approved
+      ? 'Barangay Portal: Your account has been approved'
+      : 'Barangay Portal: Update on your registration';
+    const message = approved
+      ? `Hello ${safeName}, your registration has been approved. You can now log in to the resident portal.`
+      : `Hello ${safeName}, your registration was not approved at this time. Please contact the barangay office for details.`;
     try {
-      const { data, error } = await supabase.functions.invoke('send-account-status-email', {
-        body: { target_user_id: targetUserId, status },
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          fullName: safeName,
+          status,
+          subject,
+          message,
+        }),
       });
-
-      if (error) {
-        let detail = error.message;
-        const res = (error as { context?: Response }).context;
-        if (res && typeof res.json === 'function') {
-          try {
-            const j = (await res.json()) as { error?: string; hint?: string; details?: unknown; detail?: string };
-            if (j?.error) detail += `\n${j.error}`;
-            if (j?.hint) detail += `\n${j.hint}`;
-            if (j?.detail) detail += `\n${j.detail}`;
-            if (j?.details != null) detail += `\n${JSON.stringify(j.details)}`;
-          } catch {
-            /* ignore */
-          }
-        }
-        console.error('send-account-status-email:', detail, error);
-        alert(
-          `Account was updated, but the notification email failed.\n\n${detail}\n\n` +
-            'Redeploy send-account-status-email, set RESEND_API_KEY, and ensure the resident has an email in Auth or profiles.',
-        );
-        return;
-      }
-
-      if (data && typeof data === 'object' && data !== null && 'error' in data) {
-        console.error('send-account-status-email response:', data);
-        const d = data as { error?: string; hint?: string; details?: unknown };
-        let msg = d.error || 'Unknown error';
-        if (d.hint) msg += `\n\n${d.hint}`;
-        else if (d.details != null) msg += `\n\n${JSON.stringify(d.details)}`;
-        alert(`Email failed: ${msg}`);
-      }
     } catch (err) {
-      console.error('sendAccountStatusEmail:', err);
-      alert(`Email request failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Do not block approve/reject DB update if webhook delivery fails (e.g. CORS/local dev).
+      console.warn('Status email webhook request failed:', err);
     }
   };
 
   const handleApprove = async (userId: string) => {
     try {
+      const resident = residents.find((r) => r.id === userId);
       const { error } = await supabase
         .from('profiles')
         .update({ is_approved: true, registration_status: 'approved' })
@@ -1148,7 +1318,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
       if (error) throw error;
 
-      await sendAccountStatusEmail(userId, 'approved');
+      if (resident?.email) {
+        await sendStatusEmailViaWebhook(resident.email, resident.full_name || '', 'approved');
+      }
 
       await fetchResidents();
     } catch (error) {
@@ -1161,6 +1333,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   const handleRejectRegistration = async (userId: string) => {
     if (!confirm('Reject this registration? The resident will be notified by email.')) return;
     try {
+      const resident = residents.find((r) => r.id === userId);
       const { error } = await supabase
         .from('profiles')
         .update({ is_approved: false, registration_status: 'rejected' })
@@ -1168,7 +1341,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
       if (error) throw error;
 
-      await sendAccountStatusEmail(userId, 'rejected');
+      if (resident?.email) {
+        await sendStatusEmailViaWebhook(resident.email, resident.full_name || '', 'rejected');
+      }
 
       await fetchResidents();
     } catch (error) {
@@ -1231,6 +1406,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   const totalPages = Math.ceil(filteredResidents.length / residentsPerPage);
   const startIndex = (residentPage - 1) * residentsPerPage;
   const paginatedResidents = filteredResidents.slice(startIndex, startIndex + residentsPerPage);
+  const filteredFacilityApprovals = facilityBookings.filter(
+    (booking) => bookingFilter === 'all' || booking.status === bookingFilter,
+  );
   const filteredPaperRequests = paperRequests.filter(
     (request) => paperFilter === 'all' || request.status === paperFilter,
   );
@@ -1517,6 +1695,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">DOB</th>
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">POB</th>
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Nationality</th>
+                    <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Home No.</th>
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Address</th>
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Contact</th>
                     <th className="px-5 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Role</th>
@@ -1540,6 +1719,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.date_of_birth || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.place_of_birth || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.nationality || 'N/A'}</td>
+                      <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.home_no || 'N/A'}</td>
                       <td className="px-5 py-4 border-r border-gray-200 text-sm text-gray-700">{resident.address || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.contact_number || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm">
@@ -1722,6 +1902,43 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   Add Item
                 </button>
               </div>
+              <div className="mt-4 flex flex-wrap justify-center items-center gap-2">
+                <button
+                  onClick={() => toggleBulkMode('transparency')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    bulkMode.transparency
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {bulkMode.transparency ? 'Exit checkbox mode' : 'Checkbox mode'}
+                </button>
+                <button
+                  onClick={() => cycleVisibilityFilter('transparency')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    visibilityFilter.transparency === 'active'
+                      ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                      : visibilityFilter.transparency === 'hidden'
+                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                  }`}
+                >
+                  {visibilityButtonLabel('transparency')}
+                </button>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {visibilityIndicatorLabel('transparency')}
+                </span>
+                {bulkMode.transparency && (
+                  <>
+                    <button onClick={() => bulkSetHidden('transparency', true)} className="px-3 py-2 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 text-sm font-medium">
+                      Move selected to hidden ({selectedForHide.transparency.length})
+                    </button>
+                    <button onClick={() => bulkSetHidden('transparency', false)} className="px-3 py-2 rounded-lg bg-green-100 hover:bg-green-200 text-green-800 text-sm font-medium">
+                      Restore selected
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {showTransparencyForm && (
@@ -1895,6 +2112,15 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                         </p>
                       </div>
                       <div className="flex gap-2">
+                        {bulkMode.transparency && (
+                          <input
+                            type="checkbox"
+                            checked={selectedForHide.transparency.includes(item.id)}
+                            onChange={() => toggleSelected('transparency', item.id)}
+                            className="mt-2 w-4 h-4"
+                            title="Select"
+                          />
+                        )}
                         <button
                           onClick={() => handleTogglePinTransparency(item.id, !item.pinned)}
                           className={`p-2 rounded-lg transition-colors ${item.pinned ? 'text-yellow-700 hover:bg-yellow-50' : 'text-yellow-600 hover:bg-yellow-50'}`}
@@ -1965,6 +2191,43 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   <Plus className="w-4 h-4" />
                   Add Event
                 </button>
+              </div>
+              <div className="mt-4 flex flex-wrap justify-center items-center gap-2">
+                <button
+                  onClick={() => toggleBulkMode('events')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    bulkMode.events
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {bulkMode.events ? 'Exit checkbox mode' : 'Checkbox mode'}
+                </button>
+                <button
+                  onClick={() => cycleVisibilityFilter('events')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    visibilityFilter.events === 'active'
+                      ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                      : visibilityFilter.events === 'hidden'
+                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                  }`}
+                >
+                  {visibilityButtonLabel('events')}
+                </button>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {visibilityIndicatorLabel('events')}
+                </span>
+                {bulkMode.events && (
+                  <>
+                    <button onClick={() => bulkSetHidden('events', true)} className="px-3 py-2 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 text-sm font-medium">
+                      Move selected to hidden ({selectedForHide.events.length})
+                    </button>
+                    <button onClick={() => bulkSetHidden('events', false)} className="px-3 py-2 rounded-lg bg-green-100 hover:bg-green-200 text-green-800 text-sm font-medium">
+                      Restore selected
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -2113,6 +2376,15 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                         </div>
                       </div>
                       <div className="flex gap-2 shrink-0">
+                        {bulkMode.events && (
+                          <input
+                            type="checkbox"
+                            checked={selectedForHide.events.includes(event.id)}
+                            onChange={() => toggleSelected('events', event.id)}
+                            className="mt-2 w-4 h-4"
+                            title="Select"
+                          />
+                        )}
                         <button
                           onClick={() => handleTogglePinEvent(event.id, !event.pinned)}
                           className={`p-2 rounded-lg transition-colors ${
@@ -2164,6 +2436,43 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   <Plus className="w-4 h-4" />
                   Add News
                 </button>
+              </div>
+              <div className="mt-4 flex flex-wrap justify-center items-center gap-2">
+                <button
+                  onClick={() => toggleBulkMode('news')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    bulkMode.news
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {bulkMode.news ? 'Exit checkbox mode' : 'Checkbox mode'}
+                </button>
+                <button
+                  onClick={() => cycleVisibilityFilter('news')}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    visibilityFilter.news === 'active'
+                      ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                      : visibilityFilter.news === 'hidden'
+                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                  }`}
+                >
+                  {visibilityButtonLabel('news')}
+                </button>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {visibilityIndicatorLabel('news')}
+                </span>
+                {bulkMode.news && (
+                  <>
+                    <button onClick={() => bulkSetHidden('news', true)} className="px-3 py-2 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 text-sm font-medium">
+                      Move selected to hidden ({selectedForHide.news.length})
+                    </button>
+                    <button onClick={() => bulkSetHidden('news', false)} className="px-3 py-2 rounded-lg bg-green-100 hover:bg-green-200 text-green-800 text-sm font-medium">
+                      Restore selected
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -2276,6 +2585,15 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                         </p>
                       </div>
                       <div className="flex gap-2 shrink-0">
+                        {bulkMode.news && (
+                          <input
+                            type="checkbox"
+                            checked={selectedForHide.news.includes(item.id)}
+                            onChange={() => toggleSelected('news', item.id)}
+                            className="mt-2 w-4 h-4"
+                            title="Select"
+                          />
+                        )}
                         <button
                           onClick={() => handleTogglePinNews(item.id, !item.pinned)}
                           className={`p-2 rounded-lg transition-colors ${
@@ -2599,7 +2917,42 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                 subtitle="Review, approve, or reject resident requests to use barangay facilities"
                 centered
               />
-              <div className="flex flex-wrap justify-center gap-2 mt-4">
+              <div className="flex flex-wrap justify-center items-center gap-2 mt-4">
+                <button
+                  onClick={() => toggleBulkMode('facilityApprovals')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    bulkMode.facilityApprovals
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {bulkMode.facilityApprovals ? 'Exit checkbox mode' : 'Checkbox mode'}
+                </button>
+                <button
+                  onClick={() => cycleVisibilityFilter('facilityApprovals')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    visibilityFilter.facilityApprovals === 'active'
+                      ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                      : visibilityFilter.facilityApprovals === 'hidden'
+                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                  }`}
+                >
+                  {visibilityButtonLabel('facilityApprovals')}
+                </button>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {visibilityIndicatorLabel('facilityApprovals')}
+                </span>
+                {bulkMode.facilityApprovals && (
+                  <>
+                    <button onClick={() => bulkSetHidden('facilityApprovals', true)} className="px-4 py-2 rounded-lg font-medium bg-amber-100 text-amber-800 hover:bg-amber-200">
+                      Move selected to hidden ({selectedForHide.facilityApprovals.length})
+                    </button>
+                    <button onClick={() => bulkSetHidden('facilityApprovals', false)} className="px-4 py-2 rounded-lg font-medium bg-green-100 text-green-800 hover:bg-green-200">
+                      Restore selected
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => setBookingFilter('all')}
                   className={`px-4 py-2 rounded-lg font-medium transition-colors ${
@@ -2644,9 +2997,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border">
-              {facilityBookings.filter(booking => 
-                bookingFilter === 'all' || booking.status === bookingFilter
-              ).length === 0 ? (
+              {filteredFacilityApprovals.length === 0 ? (
                 <div className="p-12 text-center">
                   <Clock className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                   <h3 className="text-lg font-medium text-gray-600 mb-2">No Bookings Found</h3>
@@ -2661,6 +3012,11 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   <table className="w-full">
                     <thead className="bg-gray-50 border-b">
                       <tr>
+                        {bulkMode.facilityApprovals && (
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Select
+                          </th>
+                        )}
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Resident
                         </th>
@@ -2682,12 +3038,18 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {facilityBookings
-                        .filter(booking => 
-                          bookingFilter === 'all' || booking.status === bookingFilter
-                        )
-                        .map((booking) => (
+                      {filteredFacilityApprovals.map((booking) => (
                           <tr key={booking.id} className="hover:bg-gray-50">
+                            {bulkMode.facilityApprovals && (
+                              <td className="px-4 py-4 whitespace-nowrap">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedForHide.facilityApprovals.includes(booking.id)}
+                                  onChange={() => toggleSelected('facilityApprovals', booking.id)}
+                                  className="w-4 h-4"
+                                />
+                              </td>
+                            )}
                             <td className="px-6 py-4 whitespace-nowrap">
                               <div className="text-sm font-medium text-gray-900">
                                 {(booking.profiles as any)?.full_name || 'Unknown'}
@@ -2793,7 +3155,42 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                 subtitle="Review and approve barangay clearance, certificate of indigency, and proof of residency requests"
                 centered
               />
-              <div className="flex flex-wrap justify-center gap-2 mt-4">
+              <div className="flex flex-wrap justify-center items-center gap-2 mt-4">
+                <button
+                  onClick={() => toggleBulkMode('paperApprovals')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    bulkMode.paperApprovals
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {bulkMode.paperApprovals ? 'Exit checkbox mode' : 'Checkbox mode'}
+                </button>
+                <button
+                  onClick={() => cycleVisibilityFilter('paperApprovals')}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    visibilityFilter.paperApprovals === 'active'
+                      ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                      : visibilityFilter.paperApprovals === 'hidden'
+                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                  }`}
+                >
+                  {visibilityButtonLabel('paperApprovals')}
+                </button>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {visibilityIndicatorLabel('paperApprovals')}
+                </span>
+                {bulkMode.paperApprovals && (
+                  <>
+                    <button onClick={() => bulkSetHidden('paperApprovals', true)} className="px-4 py-2 rounded-lg font-medium bg-amber-100 text-amber-800 hover:bg-amber-200">
+                      Move selected to hidden ({selectedForHide.paperApprovals.length})
+                    </button>
+                    <button onClick={() => bulkSetHidden('paperApprovals', false)} className="px-4 py-2 rounded-lg font-medium bg-green-100 text-green-800 hover:bg-green-200">
+                      Restore selected
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => {
                     setPaperFilter('all');
@@ -2878,6 +3275,11 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   <table className="w-full">
                     <thead className="bg-gray-50 border-b">
                       <tr>
+                        {bulkMode.paperApprovals && (
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Select
+                          </th>
+                        )}
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Resident
                         </th>
@@ -2898,6 +3300,16 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                     <tbody className="bg-white divide-y divide-gray-200">
                       {paginatedPaperRequests.map((request) => (
                           <tr key={request.id} className="hover:bg-gray-50">
+                            {bulkMode.paperApprovals && (
+                              <td className="px-4 py-4 whitespace-nowrap">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedForHide.paperApprovals.includes(request.id)}
+                                  onChange={() => toggleSelected('paperApprovals', request.id)}
+                                  className="w-4 h-4"
+                                />
+                              </td>
+                            )}
                             <td className="px-6 py-4 whitespace-nowrap">
                               <div className="text-sm font-medium text-gray-900">
                                 {request.resident_id 

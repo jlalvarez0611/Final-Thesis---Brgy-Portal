@@ -45,6 +45,7 @@ export interface Profile {
   id_image_path?: string | null;
   selfie_image_path?: string | null;
   role: 'admin' | 'resident';
+  home_no?: string;
   address?: string;
   contact_number?: string;
   /** pending = awaiting admin; approved = active; rejected = registration denied */

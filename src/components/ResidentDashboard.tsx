@@ -16,6 +16,7 @@ interface Event {
   audience?: 'residents' | 'officials' | null;
   pinned?: boolean;
   pinned_at?: string | null;
+  is_hidden?: boolean;
 }
 interface News {
   id: string;
@@ -271,6 +272,39 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const channel = supabase
+      .channel(`resident-dashboard-sync-${currentUser.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+        fetchEvents();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'news' }, () => {
+        fetchNews();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'officials' }, () => {
+        fetchOfficials();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'facilities' }, () => {
+        fetchFacilities();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transparency_items' }, () => {
+        fetchTransparencyItems();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'facility_bookings' }, () => {
+        fetchFacilityBookings(selectedFacility?.id);
+        fetchMyFacilityBookings();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'paper_requests' }, () => {
+        fetchPaperRequests();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id, selectedFacility?.id]);
+
   const updateBackButtonState = () => {
     setCanGoBack(true);
   };
@@ -303,10 +337,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   const fetchEvents = async () => {
     try {
-      const base = supabase
+      let base = supabase
         .from('events')
-        .select('*')
-        .gte('event_date', new Date().toISOString());
+        .select('*');
 
       // Prefer pinned ordering if columns exist; fallback automatically if not migrated yet.
       let res = await base
@@ -315,23 +348,31 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
         .order('event_date', { ascending: true });
 
       if (res.error && (res.error as any).code === '42703') {
-        res = await base.order('event_date', { ascending: true });
+        res = await supabase
+          .from('events')
+          .select('*')
+          .order('event_date', { ascending: true });
       }
 
       if (res.error) throw res.error;
-      setEvents(res.data || []);
-    } catch (error) { console.error('Error fetching events:', error); }
+      const visibleEvents = (res.data || []).filter((event) => event.is_hidden !== true);
+      setEvents(visibleEvents);
+    } catch (error) {
+      console.error('Error fetching events:', error);
+      setEvents([]);
+    }
   };
 
   const fetchNews = async () => {
     try {
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - NEWS_VISIBLE_DAYS);
-      const base = supabase
+      let base = supabase
         .from('news')
         .select('*')
         .eq('published', true)
         .gte('created_at', cutoff.toISOString());
+      base = base.or('is_hidden.is.null,is_hidden.eq.false');
 
       // Prefer pinned ordering if columns exist; fallback automatically if not migrated yet.
       let res = await base
@@ -341,7 +382,13 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
         .limit(25);
 
       if (res.error && (res.error as any).code === '42703') {
-        res = await base.order('created_at', { ascending: false }).limit(25);
+        res = await supabase
+          .from('news')
+          .select('*')
+          .eq('published', true)
+          .gte('created_at', cutoff.toISOString())
+          .order('created_at', { ascending: false })
+          .limit(25);
       }
 
       if (res.error) throw res.error;
@@ -359,19 +406,29 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   const fetchTransparencyItems = async () => {
     try {
-      const { data, error } = await supabase
+      let res = await supabase
         .from('transparency_items')
         .select('*')
         .eq('published', true)
+        .or('is_hidden.is.null,is_hidden.eq.false')
         .order('pinned', { ascending: false })
         .order('pinned_at', { ascending: false })
         .order('created_at', { ascending: false });
-      if (error) {
-        console.warn('Transparency items table not found:', error);
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase
+          .from('transparency_items')
+          .select('*')
+          .eq('published', true)
+          .order('pinned', { ascending: false })
+          .order('pinned_at', { ascending: false })
+          .order('created_at', { ascending: false });
+      }
+      if (res.error) {
+        console.warn('Transparency items table not found:', res.error);
         setTransparencyItems([]);
         return;
       }
-      setTransparencyItems(data || []);
+      setTransparencyItems(res.data || []);
     } catch (error) {
       console.error('Error fetching transparency items:', error);
       setTransparencyItems([]);
@@ -381,19 +438,36 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   const fetchFacilityBookings = async (facilityId?: string) => {
     try {
       // Fetch both approved and pending bookings to check for overlaps
-      let query = supabase.from('facility_bookings').select('*').in('status', ['approved', 'pending']);
+      let query = supabase
+        .from('facility_bookings')
+        .select('*')
+        .in('status', ['approved', 'pending'])
+        .or('is_hidden.is.null,is_hidden.eq.false');
       if (facilityId) query = query.eq('facility_id', facilityId);
-      const { data, error } = await query.order('booking_date', { ascending: true });
-      if (error) { setFacilityBookings([]); return; }
-      setFacilityBookings(data || []);
+      let res = await query.order('booking_date', { ascending: true });
+      if (res.error && (res.error as any).code === '42703') {
+        let fallback = supabase.from('facility_bookings').select('*').in('status', ['approved', 'pending']);
+        if (facilityId) fallback = fallback.eq('facility_id', facilityId);
+        res = await fallback.order('booking_date', { ascending: true });
+      }
+      if (res.error) { setFacilityBookings([]); return; }
+      setFacilityBookings(res.data || []);
     } catch (error) { setFacilityBookings([]); }
   };
 
   const fetchPaperRequests = async () => {
     try {
-      const { data, error } = await supabase.from('paper_requests').select('*').eq('resident_id', currentUser.id).order('created_at', { ascending: false });
-      if (error) { setPaperRequests([]); return; }
-      setPaperRequests(data || []);
+      let res = await supabase
+        .from('paper_requests')
+        .select('*')
+        .eq('resident_id', currentUser.id)
+        .or('is_hidden.is.null,is_hidden.eq.false')
+        .order('created_at', { ascending: false });
+      if (res.error && (res.error as any).code === '42703') {
+        res = await supabase.from('paper_requests').select('*').eq('resident_id', currentUser.id).order('created_at', { ascending: false });
+      }
+      if (res.error) { setPaperRequests([]); return; }
+      setPaperRequests(res.data || []);
     } catch (error) { setPaperRequests([]); }
   };
 
