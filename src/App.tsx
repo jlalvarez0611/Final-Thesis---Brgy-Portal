@@ -12,6 +12,7 @@ function App() {
   const [showLandingPage, setShowLandingPage] = useState(true);
   const [showAuthForm, setShowAuthForm] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [_currentRoute, setCurrentRoute] = useState<'landing' | 'auth' | 'dashboard'>('landing');
   const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -40,12 +41,30 @@ function App() {
   };
 
   useEffect(() => {
+    // Set up auth listener first to catch recovery events
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        // Show auth form for password recovery
+        setIsRecoveryMode(true);
+        setShowAuthForm(true);
+        setShowLandingPage(false);
+        setCurrentRoute('auth');
+      } else {
+        checkUser();
+      }
+    });
+
     // Check URL on load to restore state after refresh
     const urlParams = new URLSearchParams(window.location.search);
     const path = window.location.pathname;
 
-    // Initialize based on URL before checking user
-    if (path === '/auth' || path.includes('auth')) {
+    // Check for password recovery
+    if (urlParams.get('type') === 'recovery') {
+      setIsRecoveryMode(true);
+      setShowAuthForm(true);
+      setShowLandingPage(false);
+      setCurrentRoute('auth');
+    } else if (path === '/auth' || path.includes('auth')) {
       const mode = urlParams.get('mode') || 'login';
       setAuthMode(mode as 'login' | 'register');
       setShowAuthForm(true);
@@ -97,10 +116,6 @@ function App() {
           window.history.replaceState({ route: 'landing' }, '', '/');
         }
       }
-    });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
-      checkUser();
     });
 
     // Handle browser back/forward buttons
@@ -281,6 +296,38 @@ function App() {
           setShowLandingPage(true);
           setCurrentRoute('landing');
           // Don’t rely on history.back(): direct /auth loads or shallow stacks won’t emit popstate.
+          window.history.replaceState({ route: 'landing' }, '', '/');
+        }}
+      />
+    );
+  }
+
+  // Show auth form for password recovery even if user is signed in
+  if (isRecoveryMode && showAuthForm) {
+    return (
+      <AuthForm
+        onAuthSuccess={(profile) => {
+          setProfile(profile);
+          setShowAuthForm(false);
+          setIsRecoveryMode(false);
+          // For residents, show landing page first; for admins, go to dashboard
+          if (profile.role === 'resident') {
+            setShowLandingPage(true);
+            setCurrentRoute('landing');
+            window.history.pushState({ route: 'landing' }, '', '/landing');
+          } else {
+            setShowLandingPage(false);
+            setCurrentRoute('dashboard');
+            window.history.pushState({ route: 'dashboard' }, '', '/dashboard');
+          }
+        }}
+        initialMode={authMode}
+        forceRecoveryMode={true}
+        onBack={() => {
+          setShowAuthForm(false);
+          setIsRecoveryMode(false);
+          setShowLandingPage(true);
+          setCurrentRoute('landing');
           window.history.replaceState({ route: 'landing' }, '', '/');
         }}
       />

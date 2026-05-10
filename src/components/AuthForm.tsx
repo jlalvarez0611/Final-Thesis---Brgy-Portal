@@ -8,9 +8,10 @@ interface AuthFormProps {
   onAuthSuccess: (profile: Profile) => void;
   initialMode?: 'login' | 'register';
   onBack?: () => void;
+  forceRecoveryMode?: boolean;
 }
 
-export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthFormProps) {
+export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRecoveryMode = false }: AuthFormProps) {
   const [isLogin, setIsLogin] = useState(initialMode === 'login');
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -23,13 +24,14 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack }: AuthF
 
   useEffect(() => {
     const hash = window.location.hash || '';
-    if (hash.includes('type=recovery')) {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (forceRecoveryMode || hash.includes('type=recovery') || urlParams.get('type') === 'recovery') {
       setIsRecoveryMode(true);
       setIsLogin(true);
       setError('');
       setSuccess('Please set your new password below.');
     }
-  }, []);
+  }, [forceRecoveryMode]);
 
   // Registration form fields
   const [lastName, setLastName] = useState('');
