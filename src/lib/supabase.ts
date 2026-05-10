@@ -158,11 +158,10 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
 }
 
 /**
- * Supabase email links (signup confirm, password reset) must redirect to a URL that is listed under
- * Authentication → URL Configuration → Redirect URLs. Use the site root so one entry like
- * https://YOUR_DOMAIN/** matches (see .env.example).
+ * Supabase email links (signup confirm, password reset) must match Redirect URLs (e.g. https://YOUR_DOMAIN/**).
+ * Use /auth so App routing opens the login shell immediately; PKCE ?code= is still appended by Supabase.
  */
-export const getAuthEmailRedirectUrl = () => getSafeRedirectUrl('/');
+export const getAuthEmailRedirectUrl = () => getSafeRedirectUrl('/auth?mode=login');
 
 export const getSafeRedirectUrl = (pathname: string) => {
   const base = resolveRedirectBaseUrl().replace(/\/+$/, '');

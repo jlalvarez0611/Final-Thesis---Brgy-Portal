@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { supabase, Profile } from './lib/supabase';
 import { AuthForm } from './components/AuthForm';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -15,6 +15,31 @@ function App() {
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [_currentRoute, setCurrentRoute] = useState<'landing' | 'auth' | 'dashboard'>('landing');
   const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  /** PKCE email links used to land on `/` — normalize to `/auth` before route logic runs. */
+  const [authUrlReady, setAuthUrlReady] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const path = window.location.pathname;
+    const q = new URLSearchParams(window.location.search);
+    return !(q.has('code') && (path === '/' || path === '/landing'));
+  });
+
+  /** Wait for Supabase to exchange ?code= so PASSWORD_RECOVERY / session is settled. */
+  const [pkceExchangePending, setPkceExchangePending] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).has('code');
+  });
+
+  useLayoutEffect(() => {
+    const path = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('code') && (path === '/' || path === '/landing')) {
+      const next = new URLSearchParams(params);
+      next.set('mode', 'login');
+      window.history.replaceState({ route: 'auth', mode: 'login' }, '', `/auth?${next.toString()}`);
+    }
+    setAuthUrlReady(true);
+  }, []);
 
   // 30 minutes in milliseconds
   const INACTIVITY_TIME = 30 * 60 * 1000;
@@ -49,7 +74,12 @@ function App() {
         setShowAuthForm(true);
         setShowLandingPage(false);
         setCurrentRoute('auth');
+        setPkceExchangePending(false);
       } else {
+        // Do not clear on INITIAL_SESSION with null — PKCE exchange may still be running.
+        if (session && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
+          setPkceExchangePending(false);
+        }
         checkUser();
       }
     });
@@ -91,7 +121,9 @@ function App() {
       if (path === '/auth' || path.includes('auth')) {
         const mode = urlParams.get('mode') || 'login';
         if (!window.history.state) {
-          window.history.replaceState({ route: 'auth', mode }, '', `/auth?mode=${mode}`);
+          const p = new URLSearchParams(urlParams);
+          p.set('mode', mode);
+          window.history.replaceState({ route: 'auth', mode }, '', `/auth?${p.toString()}`);
         }
       } else if (path === '/dashboard' || path.includes('dashboard')) {
         if (!window.history.state) {
@@ -171,6 +203,12 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!pkceExchangePending) return;
+    const id = window.setTimeout(() => setPkceExchangePending(false), 8000);
+    return () => window.clearTimeout(id);
+  }, [pkceExchangePending]);
+
   // Setup inactivity timeout on profile change
   useEffect(() => {
     if (profile) {
@@ -241,7 +279,7 @@ function App() {
     setProfile(updatedProfile);
   };
 
-  if (loading) {
+  if (!authUrlReady || loading || pkceExchangePending) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
@@ -249,6 +287,38 @@ function App() {
           <p className="mt-4 text-gray-600">Loading...</p>
         </div>
       </div>
+    );
+  }
+
+  // Password reset / recovery UI must win over landing and dashboards
+  if (isRecoveryMode && showAuthForm) {
+    return (
+      <AuthForm
+        onAuthSuccess={(profile) => {
+          setProfile(profile);
+          setShowAuthForm(false);
+          setIsRecoveryMode(false);
+          // For residents, show landing page first; for admins, go to dashboard
+          if (profile.role === 'resident') {
+            setShowLandingPage(true);
+            setCurrentRoute('landing');
+            window.history.pushState({ route: 'landing' }, '', '/landing');
+          } else {
+            setShowLandingPage(false);
+            setCurrentRoute('dashboard');
+            window.history.pushState({ route: 'dashboard' }, '', '/dashboard');
+          }
+        }}
+        initialMode={authMode}
+        forceRecoveryMode={true}
+        onBack={() => {
+          setShowAuthForm(false);
+          setIsRecoveryMode(false);
+          setShowLandingPage(true);
+          setCurrentRoute('landing');
+          window.history.replaceState({ route: 'landing' }, '', '/');
+        }}
+      />
     );
   }
 
@@ -296,38 +366,6 @@ function App() {
           setShowLandingPage(true);
           setCurrentRoute('landing');
           // Don’t rely on history.back(): direct /auth loads or shallow stacks won’t emit popstate.
-          window.history.replaceState({ route: 'landing' }, '', '/');
-        }}
-      />
-    );
-  }
-
-  // Show auth form for password recovery even if user is signed in
-  if (isRecoveryMode && showAuthForm) {
-    return (
-      <AuthForm
-        onAuthSuccess={(profile) => {
-          setProfile(profile);
-          setShowAuthForm(false);
-          setIsRecoveryMode(false);
-          // For residents, show landing page first; for admins, go to dashboard
-          if (profile.role === 'resident') {
-            setShowLandingPage(true);
-            setCurrentRoute('landing');
-            window.history.pushState({ route: 'landing' }, '', '/landing');
-          } else {
-            setShowLandingPage(false);
-            setCurrentRoute('dashboard');
-            window.history.pushState({ route: 'dashboard' }, '', '/dashboard');
-          }
-        }}
-        initialMode={authMode}
-        forceRecoveryMode={true}
-        onBack={() => {
-          setShowAuthForm(false);
-          setIsRecoveryMode(false);
-          setShowLandingPage(true);
-          setCurrentRoute('landing');
           window.history.replaceState({ route: 'landing' }, '', '/');
         }}
       />

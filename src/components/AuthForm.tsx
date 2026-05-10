@@ -33,6 +33,21 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
     }
   }, [forceRecoveryMode]);
 
+  // Password reset with PKCE often lands with ?code= only; Supabase emits PASSWORD_RECOVERY after exchange.
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsRecoveryMode(true);
+        setIsLogin(true);
+        setError('');
+        setSuccess('Please set your new password below.');
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
   // Registration form fields
   const [lastName, setLastName] = useState('');
   const [firstName, setFirstName] = useState('');
