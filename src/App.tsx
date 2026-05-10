@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef } from 'react';
-import { supabase, Profile } from './lib/supabase';
+import { supabase, Profile, isPasswordRecoverySession } from './lib/supabase';
 import { AuthForm } from './components/AuthForm';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ResidentDashboard } from './components/ResidentDashboard';
@@ -76,6 +76,13 @@ function App() {
         setCurrentRoute('auth');
         setPkceExchangePending(false);
       } else {
+        // PKCE + email link often skips PASSWORD_RECOVERY; JWT amr still marks recovery sessions.
+        if (session && isPasswordRecoverySession(session)) {
+          setIsRecoveryMode(true);
+          setShowAuthForm(true);
+          setShowLandingPage(false);
+          setCurrentRoute('auth');
+        }
         // Do not clear on INITIAL_SESSION with null — PKCE exchange may still be running.
         if (session && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
           setPkceExchangePending(false);
@@ -84,16 +91,33 @@ function App() {
       }
     });
 
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session && isPasswordRecoverySession(session)) {
+        setIsRecoveryMode(true);
+        setShowAuthForm(true);
+        setShowLandingPage(false);
+        setCurrentRoute('auth');
+        setPkceExchangePending(false);
+      }
+    });
+
     // Check URL on load to restore state after refresh
     const urlParams = new URLSearchParams(window.location.search);
+    const hashRaw = window.location.hash.replace(/^#/, '');
+    const hashParams = new URLSearchParams(hashRaw);
+    const recoveryFromUrl =
+      urlParams.get('type') === 'recovery' ||
+      hashParams.get('type') === 'recovery' ||
+      hashRaw.includes('type=recovery');
     const path = window.location.pathname;
 
-    // Check for password recovery
-    if (urlParams.get('type') === 'recovery') {
+    // Check for password recovery (query, hash, or redirect_to we set with type=recovery)
+    if (recoveryFromUrl) {
       setIsRecoveryMode(true);
       setShowAuthForm(true);
       setShowLandingPage(false);
       setCurrentRoute('auth');
+      setPkceExchangePending(false);
     } else if (path === '/auth' || path.includes('auth')) {
       const mode = urlParams.get('mode') || 'login';
       setAuthMode(mode as 'login' | 'register');

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase, getAuthEmailRedirectUrl } from '../lib/supabase';
+import { supabase, getAuthEmailRedirectUrl, getPasswordResetRedirectUrl } from '../lib/supabase';
 import { LogIn, UserPlus, X, FileText } from 'lucide-react';
 
 import { Profile } from '../lib/supabase';
@@ -426,7 +426,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
     setSuccess('');
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: getAuthEmailRedirectUrl(),
+        redirectTo: getPasswordResetRedirectUrl(),
       });
       if (error) throw error;
       setSuccess('Password reset link sent. Please check your email.');
@@ -606,38 +606,42 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
             <p className="text-gray-600">Community Management System</p>
           </div>
 
-          <div className="flex gap-2 mb-6">
-            <button
-              onClick={() => {
-                setIsLogin(true);
-                setError('');
-                setSuccess('');
-              }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                isLogin
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              <LogIn className="inline-block w-4 h-4 mr-2" />
-              Login
-            </button>
-            <button
-              onClick={() => {
-                setIsLogin(false);
-                setError('');
-                setSuccess('');
-              }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                !isLogin
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              <UserPlus className="inline-block w-4 h-4 mr-2" />
-              Register
-            </button>
-          </div>
+          {!(isRecoveryMode || forceRecoveryMode) && (
+            <div className="flex gap-2 mb-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLogin(true);
+                  setError('');
+                  setSuccess('');
+                }}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
+                  isLogin
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                <LogIn className="inline-block w-4 h-4 mr-2" />
+                Login
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLogin(false);
+                  setError('');
+                  setSuccess('');
+                }}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
+                  !isLogin
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                <UserPlus className="inline-block w-4 h-4 mr-2" />
+                Register
+              </button>
+            </div>
+          )}
 
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">

@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type Session } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -180,6 +180,43 @@ export const getSafeRedirectUrl = (pathname: string) => {
     return `${base}${path}`;
   }
 };
+
+/** Password reset only — adds type=recovery so the app shows the new-password form without relying on auth events alone. */
+export const getPasswordResetRedirectUrl = () =>
+  getSafeRedirectUrl('/auth?mode=login&type=recovery');
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4;
+    const padded = pad ? b64 + '='.repeat(4 - pad) : b64;
+    const json = atob(padded);
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function amrHasRecoveryMethod(amr: unknown): boolean {
+  if (!Array.isArray(amr)) return false;
+  return amr.some((entry) => {
+    if (entry === 'recovery') return true;
+    if (entry && typeof entry === 'object' && 'method' in entry) {
+      return (entry as { method?: string }).method === 'recovery';
+    }
+    return false;
+  });
+}
+
+/** True when this access token was issued for the password-recovery flow (PKCE may skip PASSWORD_RECOVERY event). */
+export function isPasswordRecoverySession(session: Session | null): boolean {
+  if (!session?.access_token) return false;
+  const payload = decodeJwtPayload(session.access_token);
+  if (!payload) return false;
+  return amrHasRecoveryMethod(payload.amr);
+}
 
 export interface Profile {
   id: string;
