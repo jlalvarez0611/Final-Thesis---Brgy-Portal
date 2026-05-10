@@ -885,10 +885,13 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                 </label>
                 <input
                   type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={mobileNumber}
-                  onChange={(e) => setMobileNumber(e.target.value)}
+                  onChange={(e) => setMobileNumber(e.target.value.replace(/[^0-9]/g, ''))}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   required
+                  placeholder="e.g. 09171234567"
                 />
               </div>
               <div className="mb-4">
