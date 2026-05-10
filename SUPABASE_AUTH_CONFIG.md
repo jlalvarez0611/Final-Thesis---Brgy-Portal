@@ -53,7 +53,13 @@ Make sure your `.env` file has:
 ```
 VITE_SUPABASE_URL=your_supabase_url
 VITE_SUPABASE_ANON_KEY=your_anon_key
+VITE_SITE_URL=http://localhost:3000
 ```
+
+**Important for Production:**
+- Set `VITE_SITE_URL` to your production domain (e.g., `https://yourdomain.com`)
+- This ensures password reset links redirect to the correct URL when deployed
+- For local development, use `http://localhost:3000`
 
 ## Test the Registration
 

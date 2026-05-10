@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, SITE_URL } from '../lib/supabase';
 import { LogIn, UserPlus, X, FileText } from 'lucide-react';
 
 import { Profile } from '../lib/supabase';
@@ -411,7 +411,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
     setSuccess('');
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${window.location.origin}/auth?mode=login`,
+        redirectTo: `${SITE_URL}/auth?mode=login`,
       });
       if (error) throw error;
       setSuccess('Password reset link sent. Please check your email.');

@@ -8,4 +8,10 @@ export default defineConfig({
     exclude: ['lucide-react'],
   },
   base: './',
+  server: {
+    headers: {
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy': "frame-ancestors 'none'",
+    },
+  },
 })
