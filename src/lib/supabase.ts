@@ -2,7 +2,18 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const siteUrl = import.meta.env.VITE_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+const envSiteUrl = import.meta.env.VITE_SITE_URL;
+const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+const siteUrl = (() => {
+  if (envSiteUrl) {
+    const isEnvLocalhost = envSiteUrl.includes('localhost') || envSiteUrl.includes('127.0.0.1');
+    if (isEnvLocalhost && runtimeOrigin && !runtimeOrigin.includes('localhost') && !runtimeOrigin.includes('127.0.0.1')) {
+      return runtimeOrigin;
+    }
+    return envSiteUrl;
+  }
+  return runtimeOrigin;
+})();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
@@ -45,9 +56,10 @@ const normalizeSiteUrl = (url: string) => {
 
 export const SITE_URL = normalizeSiteUrl(siteUrl);
 
-// Log the resolved site origin so we can verify the password reset redirect target.
 if (typeof window !== 'undefined') {
-  console.log('Supabase redirect SITE_URL =', SITE_URL);
+  console.log('Supabase redirect SITE_URL env value =', envSiteUrl);
+  console.log('Supabase redirect SITE_URL runtime origin =', runtimeOrigin);
+  console.log('Supabase redirect SITE_URL resolved =', SITE_URL);
 }
 
 export const getSafeRedirectUrl = (pathname: string) => {
