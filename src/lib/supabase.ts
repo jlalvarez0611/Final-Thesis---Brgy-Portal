@@ -78,6 +78,24 @@ const normalizeAppBaseUrl = (url: string) => {
 
 export const SITE_URL = normalizeSiteUrl(siteUrl);
 
+/** `VITE_SITE_URL` may include a path by mistake; redirect base must be origin (+ optional `base` path only). */
+function siteOriginFromEnv(): string | null {
+  if (!envSiteUrl?.trim()) return null;
+  try {
+    return new URL(envSiteUrl.trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+function envOriginIsProduction(origin: string): boolean {
+  return Boolean(
+    origin &&
+      !origin.includes('localhost') &&
+      !origin.includes('127.0.0.1')
+  );
+}
+
 /** App root including GitHub Pages repo path (uses Vite `base` + current page). */
 function resolveAppBaseUrl(): string {
   if (typeof window === 'undefined') {
@@ -91,9 +109,31 @@ function resolveAppBaseUrl(): string {
 
 /**
  * Base URL for email confirmation and password reset redirects.
- * Uses the live page (including subdirectory) on deployed HTTPS sites so CI/build .env is never wrong.
+ * In production builds, prefer `VITE_SITE_URL` origin so Vercel always sends the real site to Supabase
+ * (avoids Supabase falling back to dashboard "Site URL" when redirect_to mismatches).
+ * On the live non-localhost page, also respect subdirectory from Vite `base` when env is only an origin.
  */
 function resolveRedirectBaseUrl(): string {
+  const envOrigin = siteOriginFromEnv();
+
+  if (import.meta.env.PROD && envOrigin && envOriginIsProduction(envOrigin)) {
+    if (typeof window !== 'undefined') {
+      try {
+        const fromWindow = resolveAppBaseUrl();
+        const windowOrigin = window.location.origin;
+        const pathSuffix = fromWindow.startsWith(windowOrigin)
+          ? fromWindow.slice(windowOrigin.length)
+          : '';
+        if (pathSuffix && pathSuffix !== '/') {
+          return normalizeAppBaseUrl(`${envOrigin}${pathSuffix}`);
+        }
+      } catch {
+        /* use env origin only */
+      }
+    }
+    return normalizeAppBaseUrl(envOrigin);
+  }
+
   if (typeof window !== 'undefined') {
     const { hostname } = window.location;
     if (!isLocalhostHost(hostname)) {
@@ -104,6 +144,11 @@ function resolveRedirectBaseUrl(): string {
       }
     }
   }
+
+  if (envOrigin) {
+    return normalizeAppBaseUrl(envOrigin);
+  }
+
   return SITE_URL;
 }
 
