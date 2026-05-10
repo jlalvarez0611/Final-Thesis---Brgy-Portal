@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase, SITE_URL, getSafeRedirectUrl } from '../lib/supabase';
+import { supabase, getSafeRedirectUrl } from '../lib/supabase';
 import { LogIn, UserPlus, X, FileText } from 'lucide-react';
 
 import { Profile } from '../lib/supabase';

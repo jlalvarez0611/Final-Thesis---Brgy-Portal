@@ -2,8 +2,12 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const envSiteUrl = import.meta.env.VITE_SITE_URL;
+const envSiteUrl = import.meta.env.VITE_SITE_URL as string | undefined;
 const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+
+const isLocalhostHost = (host: string) =>
+  host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+
 const siteUrl = (() => {
   if (envSiteUrl) {
     const isEnvLocalhost = envSiteUrl.includes('localhost') || envSiteUrl.includes('127.0.0.1');
@@ -33,6 +37,7 @@ if (supabaseAnonKey.length < 100) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
+    flowType: 'pkce',
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
@@ -42,10 +47,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 const normalizeSiteUrl = (url: string) => {
   try {
     const parsed = new URL(url);
-    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+    const isLocalhost = isLocalhostHost(parsed.hostname);
     if (parsed.protocol !== 'https:' && !isLocalhost) {
       console.warn(
-        `VITE_SITE_URL does not use HTTPS. For production, set VITE_SITE_URL to a secure https:// origin.`
+        `Site URL does not use HTTPS. For production, use a secure https:// URL for auth redirects.`
       );
     }
     return parsed.origin;
@@ -54,19 +59,66 @@ const normalizeSiteUrl = (url: string) => {
   }
 };
 
+/** Full public app root (origin + path); enforces HTTPS warning for production hosts. */
+const normalizeAppBaseUrl = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    const isLocalhost = isLocalhostHost(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !isLocalhost) {
+      console.warn(
+        `Site URL does not use HTTPS. For production, use a secure https:// URL for auth redirects.`
+      );
+    }
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return path ? `${parsed.origin}${path}` : parsed.origin;
+  } catch {
+    return url.replace(/\/+$/, '');
+  }
+};
+
 export const SITE_URL = normalizeSiteUrl(siteUrl);
 
-if (typeof window !== 'undefined') {
-  console.log('Supabase redirect SITE_URL env value =', envSiteUrl);
-  console.log('Supabase redirect SITE_URL runtime origin =', runtimeOrigin);
-  console.log('Supabase redirect SITE_URL resolved =', SITE_URL);
+/** App root including GitHub Pages repo path (uses Vite `base` + current page). */
+function resolveAppBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return SITE_URL.replace(/\/+$/, '');
+  }
+  const base = import.meta.env.BASE_URL || '/';
+  const resolved = new URL(base, window.location.href);
+  const path = resolved.pathname.replace(/\/+$/, '');
+  return path ? `${resolved.origin}${path}` : resolved.origin;
+}
+
+/**
+ * Base URL for email confirmation and password reset redirects.
+ * Uses the live page (including subdirectory) on deployed HTTPS sites so CI/build .env is never wrong.
+ */
+function resolveRedirectBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const { hostname } = window.location;
+    if (!isLocalhostHost(hostname)) {
+      try {
+        return normalizeAppBaseUrl(resolveAppBaseUrl());
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+  return SITE_URL;
+}
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  console.debug('[auth redirects] VITE_SITE_URL =', envSiteUrl ?? '(unset)');
+  console.debug('[auth redirects] resolved base =', resolveRedirectBaseUrl());
 }
 
 export const getSafeRedirectUrl = (pathname: string) => {
+  const base = resolveRedirectBaseUrl().replace(/\/+$/, '');
+  const path = pathname.startsWith('/') ? pathname : `/${pathname}`;
   try {
-    return new URL(pathname, SITE_URL).toString();
+    return new URL(path.slice(1), `${base}/`).toString();
   } catch {
-    return SITE_URL.replace(/\/+$/, '') + '/' + pathname.replace(/^\/+/, '');
+    return `${base}${path}`;
   }
 };
 
