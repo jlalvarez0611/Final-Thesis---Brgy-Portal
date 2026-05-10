@@ -45,6 +45,11 @@ const normalizeSiteUrl = (url: string) => {
 
 export const SITE_URL = normalizeSiteUrl(siteUrl);
 
+// Log the resolved site origin so we can verify the password reset redirect target.
+if (typeof window !== 'undefined') {
+  console.log('Supabase redirect SITE_URL =', SITE_URL);
+}
+
 export const getSafeRedirectUrl = (pathname: string) => {
   try {
     return new URL(pathname, SITE_URL).toString();
