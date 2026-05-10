@@ -28,7 +28,30 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-export const SITE_URL = siteUrl;
+const normalizeSiteUrl = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+    if (parsed.protocol !== 'https:' && !isLocalhost) {
+      console.warn(
+        `VITE_SITE_URL does not use HTTPS. For production, set VITE_SITE_URL to a secure https:// origin.`
+      );
+    }
+    return parsed.origin;
+  } catch {
+    return url;
+  }
+};
+
+export const SITE_URL = normalizeSiteUrl(siteUrl);
+
+export const getSafeRedirectUrl = (pathname: string) => {
+  try {
+    return new URL(pathname, SITE_URL).toString();
+  } catch {
+    return SITE_URL.replace(/\/+$/, '') + '/' + pathname.replace(/^\/+/, '');
+  }
+};
 
 export interface Profile {
   id: string;
