@@ -157,8 +157,23 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   console.debug('[auth redirects] resolved base =', resolveRedirectBaseUrl());
 }
 
+/**
+ * Supabase email links (signup confirm, password reset) must redirect to a URL that is listed under
+ * Authentication → URL Configuration → Redirect URLs. Use the site root so one entry like
+ * https://YOUR_DOMAIN/** matches (see .env.example).
+ */
+export const getAuthEmailRedirectUrl = () => getSafeRedirectUrl('/');
+
 export const getSafeRedirectUrl = (pathname: string) => {
   const base = resolveRedirectBaseUrl().replace(/\/+$/, '');
+  if (
+    import.meta.env.PROD &&
+    (base.includes('localhost') || base.includes('127.0.0.1'))
+  ) {
+    console.error(
+      '[Auth] Production build is using localhost for auth redirects. Set VITE_SITE_URL in Vercel (or rely on VERCEL_URL via vite.config). In Supabase set Site URL to your HTTPS app and add Redirect URL: https://YOUR_DOMAIN/**'
+    );
+  }
   const path = pathname.startsWith('/') ? pathname : `/${pathname}`;
   try {
     return new URL(path.slice(1), `${base}/`).toString();
