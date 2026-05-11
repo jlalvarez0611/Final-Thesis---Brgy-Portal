@@ -43,7 +43,7 @@ interface PaperRequest {
   updated_at?: string | null;
 }
 interface Facility { id: string; name: string; description?: string; capacity?: number; created_at: string; }
-interface FacilityBooking { id: string; facility_id: string; resident_id: string; booking_date: string; duration_hours?: number; duration_minutes?: number; status: 'pending' | 'approved' | 'rejected' | 'cancelled'; created_at: string; }
+interface FacilityBooking { id: string; facility_id: string; resident_id: string; booking_date: string; duration_hours?: number; duration_minutes?: number; status: 'pending' | 'approved' | 'rejected' | 'cancelled'; booking_reason?: string; created_at: string; }
 interface TransparencyItem {
   id: string;
   title: string;
@@ -489,6 +489,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   const fetchFacilityBookings = async (facilityId?: string) => {
     try {
+      // Clean up old bookings before fetching
+      await supabase.rpc('cleanup_old_facility_bookings');
+
       // Fetch both approved and pending bookings to check for overlaps
       let query = supabase
         .from('facility_bookings')
@@ -525,6 +528,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   const fetchMyFacilityBookings = async () => {
     try {
+      // Clean up old bookings before fetching
+      await supabase.rpc('cleanup_old_facility_bookings');
+
       const { data, error } = await supabase.from('facility_bookings').select(`
           *,
           facilities:facility_id ( name )
@@ -1683,6 +1689,11 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                                     }
                                   })()}
                                 </p>
+                                {booking.booking_reason && (
+                                  <p className="text-xs text-slate-600 mt-1">
+                                    <strong>Reason:</strong> {booking.booking_reason}
+                                  </p>
+                                )}
                                 <div className="flex items-center gap-2 mt-2">
                                   <span className={`inline-block px-2 py-1 rounded text-xs ${
                                     booking.status === 'approved' ? 'bg-slate-200 text-slate-800' :

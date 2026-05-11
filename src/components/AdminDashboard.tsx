@@ -62,6 +62,7 @@ interface FacilityBooking {
   resident_id: string;
   booking_date: string;
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  booking_reason?: string;
   is_hidden?: boolean;
   created_at: string;
   facilities?: { name: string };
@@ -617,6 +618,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
 
   const fetchFacilityBookings = async () => {
     try {
+      // Clean up old bookings before fetching
+      await supabase.rpc('cleanup_old_facility_bookings');
+
       let query = supabase
         .from('facility_bookings')
         .select(`
@@ -1429,7 +1433,8 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   ).length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
+      <div className="min-h-screen bg-gray-50">
       <nav className="bg-white shadow-sm border-b">
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16 gap-3">
@@ -3030,6 +3035,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                           Request Date
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Reason
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Status
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -3095,6 +3103,9 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                                   hour12: true,
                                 })}
                               </div>
+                            </td>
+                            <td className="px-6 py-4 max-w-[30rem] text-sm text-gray-900 whitespace-normal break-words">
+                              {booking.booking_reason || 'No reason provided'}
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
                               <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
@@ -3645,5 +3656,6 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
         )}
       </div>
     </div>
+  </>
   );
-}
+};
