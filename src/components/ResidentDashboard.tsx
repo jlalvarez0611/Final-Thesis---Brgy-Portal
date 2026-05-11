@@ -107,6 +107,7 @@ const detectFacilityBookingConflicts = (
   return bookings
     .filter((booking) => {
       if (booking.facility_id !== facilityId) return false;
+      if (booking.status !== 'approved') return false;
       const existingStart = new Date(booking.booking_date);
       const existingDuration = resolveExistingBookingMinutes(booking);
       const existingEnd = new Date(existingStart);
@@ -177,6 +178,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   const [bookingAMPM, setBookingAMPM] = useState<'AM' | 'PM'>('AM');
   const [bookingDurationHours, setBookingDurationHours] = useState('0'); // Default 0 hours
   const [bookingDurationMinutes, setBookingDurationMinutes] = useState('0'); // Default 0 minutes
+  const [bookingReason, setBookingReason] = useState('');
   const [bookingCalendarMonth, setBookingCalendarMonth] = useState(new Date());
   const [timeOverlap, setTimeOverlap] = useState<string | null>(null);
   const [transparencyPdfViewer, setTransparencyPdfViewer] = useState<{ url: string; title: string } | null>(null);
@@ -193,6 +195,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       setBookingAMPM('AM');
       setBookingDurationHours('0');
       setBookingDurationMinutes('0');
+      setBookingReason('');
       setTimeOverlap(null);
     }
   }, [selectedFacility]);
@@ -587,13 +590,20 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
     } finally { setLoading(false); }
   };
 
-  const handleFacilityBooking = async (facilityId: string, bookingDate: string, bookingTime: string, hours: string, minutes: string) => {
+  const handleFacilityBooking = async (facilityId: string, bookingDate: string, bookingTime: string, hours: string, minutes: string, reason: string) => {
     try {
       setLoading(true);
       
       // Validate inputs
       if (!bookingDate || !bookingTime) {
         alert('Please select a booking date and time.');
+        setLoading(false);
+        return;
+      }
+
+      const normalizedReason = reason.trim();
+      if (!normalizedReason) {
+        alert('Please provide a reason for booking this facility.');
         setLoading(false);
         return;
       }
@@ -622,6 +632,30 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       // Validate duration
       if (totalMinutes <= 0) {
         alert('Please select a duration of at least 15 minutes.');
+        setLoading(false);
+        return;
+      }
+
+      // Prevent duplicate active requests by the same resident for the same facility.
+      let existingOwn = await supabase
+        .from('facility_bookings')
+        .select('id,status')
+        .eq('resident_id', currentUser.id)
+        .eq('facility_id', facilityId)
+        .in('status', ['pending', 'approved'])
+        .limit(1);
+      if (existingOwn.error && (existingOwn.error as any).code === '42703') {
+        existingOwn = await supabase
+          .from('facility_bookings')
+          .select('id,status')
+          .eq('resident_id', currentUser.id)
+          .eq('facility_id', facilityId)
+          .neq('status', 'cancelled')
+          .neq('status', 'rejected')
+          .limit(1);
+      }
+      if (!existingOwn.error && (existingOwn.data || []).length > 0) {
+        alert('You already have an active request for this facility. Please cancel or wait for that request before submitting another.');
         setLoading(false);
         return;
       }
@@ -678,6 +712,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
         resident_id: currentUser.id,
         booking_date: bookingDateTime,
         status: 'pending',
+        booking_reason: normalizedReason,
       };
       
       // Try to include duration fields
@@ -697,6 +732,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
             booking_date: bookingDateTime,
             duration_hours: durationHours, // Already an integer
             status: 'pending',
+            booking_reason: normalizedReason,
           }).select().single();
           
           if (retryError) {
@@ -715,6 +751,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       setBookingAMPM('AM');
       setBookingDurationHours('0');
       setBookingDurationMinutes('0');
+      setBookingReason('');
       setTimeOverlap(null);
       alert('Booking request submitted! Please wait for approval.\nNote: Please run the SQL migration to add duration_minutes column for full functionality.');
       return;
@@ -732,6 +769,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       setBookingAMPM('AM');
       setBookingDurationHours('0');
       setBookingDurationMinutes('0');
+      setBookingReason('');
       setTimeOverlap(null);
       alert('Booking request submitted! Please wait for approval.');
     } catch (error: any) {
@@ -742,8 +780,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       // Provide more specific error messages
       if (errorMessage.includes('permission') || errorMessage.includes('policy') || errorCode === '42501') {
         alert('Permission denied. Please make sure you are logged in and have permission to create bookings.');
-      } else if (errorMessage.includes('duration_minutes') || errorMessage.includes('column')) {
-        alert(`Database error: The duration_minutes column may not exist yet.\n\nPlease run the SQL migration file: supabase_fix_booking_cancel_policy.sql\n\nError: ${errorMessage}`);
+      } else if (errorMessage.includes('booking_reason') || errorMessage.includes('duration_minutes') || errorMessage.includes('column')) {
+        alert(`Database error: Missing required booking columns in facility_bookings.\n\nPlease run your latest Supabase migration for facility bookings (including booking_reason and duration_minutes).\n\nError: ${errorMessage}`);
       } else if (errorMessage.includes('foreign key') || errorMessage.includes('facility_id')) {
         alert('Invalid facility selected. Please try again.');
       } else {
@@ -2322,6 +2360,20 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                           </select>
                         </div>
                       </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Reason for Booking</label>
+                        <textarea
+                          value={bookingReason}
+                          onChange={(e) => setBookingReason(e.target.value)}
+                          rows={3}
+                          placeholder="State why you need to use this facility."
+                          className="w-full px-4 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
+                        />
+                        {!bookingReason.trim() && (
+                          <p className="mt-1 text-xs text-slate-600">Please provide a reason before submitting.</p>
+                        )}
+                      </div>
                       
                       {/* Overlap Warning */}
                       {timeOverlap && (
@@ -2348,12 +2400,12 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                     <button
                       onClick={() => {
                         if (bookingDate && bookingTime) {
-                          handleFacilityBooking(selectedFacility.id, bookingDate, bookingTime, bookingDurationHours, bookingDurationMinutes);
+                          handleFacilityBooking(selectedFacility.id, bookingDate, bookingTime, bookingDurationHours, bookingDurationMinutes, bookingReason);
                         } else {
                           alert('Please select a booking date and time');
                         }
                       }}
-                      disabled={loading || !bookingDate || !bookingTime || !!timeOverlap || (() => {
+                      disabled={loading || !bookingDate || !bookingTime || !bookingReason.trim() || !!timeOverlap || (() => {
                         const hours = parseInt(bookingDurationHours) || 0;
                         const mins = parseInt(bookingDurationMinutes) || 0;
                         return hours * 60 + mins < 15;
@@ -2372,6 +2424,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         setBookingAMPM('AM');
                         setBookingDurationHours('0');
                         setBookingDurationMinutes('0');
+                        setBookingReason('');
                         setTimeOverlap(null);
                       }}
                       className="px-4 py-2 bg-slate-200 text-slate-700 rounded hover:shadow transition-shadow"
