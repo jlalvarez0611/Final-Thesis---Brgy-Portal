@@ -69,6 +69,12 @@ const toInputDateLocal = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
+const fromInputDateLocal = (input: string) => {
+  const [year, month, day] = input.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+};
+
 const resolveExistingBookingMinutes = (booking: FacilityBooking) => {
   const hours = Number(booking.duration_hours ?? 0);
   const minutes = Number(booking.duration_minutes ?? 0);
@@ -2169,11 +2175,11 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                           }
                           
                           const isPast = isDatePast(date);
-                          const isSelected = bookingDate === date.toISOString().split('T')[0];
+                          const isSelected = bookingDate === toInputDateLocal(date);
                           
                           return (
                             <button
-                              key={date.toISOString()}
+                              key={`${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`}
                               onClick={() => handleDateClick(date)}
                               disabled={isPast}
                               className={`
@@ -2201,7 +2207,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                     {bookingDate && (
                       <div className="mt-4 p-3 bg-slate-100 rounded border border-slate-300">
                         <p className="text-xs font-medium text-slate-800">
-                          Selected: {new Date(bookingDate).toLocaleDateString('en-US', { 
+                          Selected: {(fromInputDateLocal(bookingDate) || new Date(bookingDate)).toLocaleDateString('en-US', {
                             weekday: 'long', 
                             year: 'numeric', 
                             month: 'long', 
