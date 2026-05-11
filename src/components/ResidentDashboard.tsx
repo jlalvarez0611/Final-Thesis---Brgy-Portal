@@ -60,6 +60,71 @@ interface ResidentDashboardProps { currentUser: Profile; onLogout: () => void; o
 
 const NEWS_VISIBLE_DAYS = 7;
 
+const DEFAULT_BOOKING_MINUTES = 120;
+
+const toInputDateLocal = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const resolveExistingBookingMinutes = (booking: FacilityBooking) => {
+  const hours = Number(booking.duration_hours ?? 0);
+  const minutes = Number(booking.duration_minutes ?? 0);
+
+  if (Number.isFinite(minutes) && minutes > 0 && minutes >= hours * 60) {
+    return minutes;
+  }
+  if (Number.isFinite(hours) || Number.isFinite(minutes)) {
+    const computed = (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+    if (computed > 0) return computed;
+  }
+  return DEFAULT_BOOKING_MINUTES;
+};
+
+type BookingConflict = {
+  start: string;
+  end: string;
+  status: FacilityBooking['status'];
+};
+
+const detectFacilityBookingConflicts = (
+  bookings: FacilityBooking[],
+  facilityId: string,
+  requestedStart: Date,
+  requestedDurationMinutes: number
+): BookingConflict[] => {
+  const requestedEnd = new Date(requestedStart);
+  requestedEnd.setMinutes(requestedEnd.getMinutes() + requestedDurationMinutes);
+
+  return bookings
+    .filter((booking) => {
+      if (booking.facility_id !== facilityId) return false;
+      const existingStart = new Date(booking.booking_date);
+      const existingDuration = resolveExistingBookingMinutes(booking);
+      const existingEnd = new Date(existingStart);
+      existingEnd.setMinutes(existingEnd.getMinutes() + existingDuration);
+      return requestedStart < existingEnd && requestedEnd > existingStart;
+    })
+    .map((booking) => {
+      const existingStart = new Date(booking.booking_date);
+      const existingDuration = resolveExistingBookingMinutes(booking);
+      const existingEnd = new Date(existingStart);
+      existingEnd.setMinutes(existingEnd.getMinutes() + existingDuration);
+      return {
+        start: existingStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+        end: existingEnd.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+        status: booking.status,
+      };
+    });
+};
+
+const buildConflictMessage = (conflicts: BookingConflict[]) => {
+  const spans = conflicts.map((c) => `${c.start} - ${c.end} (${c.status})`).join(', ');
+  return `Time conflict detected! The facility is already booked during: ${spans}. Please choose a different time.`;
+};
+
 export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBackToLanding }: ResidentDashboardProps) {
   const buildFormDataFromProfile = (profile: Profile) => ({
     full_name: profile.full_name || '',
@@ -150,50 +215,28 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   // Check for time overlap when date, time, or duration changes
   useEffect(() => {
     if (bookingDate && bookingTime && selectedFacility) {
-      // Calculate overlap
-      if (!selectedFacility) {
-        setTimeOverlap(null);
-        return;
-      }
-      
       const [year, month, day] = bookingDate.split('-').map(Number);
       const [hoursNum, minutesNum] = bookingTime.split(':').map(Number);
       const durationHours = parseInt(bookingDurationHours) || 0;
       const durationMinutes = parseInt(bookingDurationMinutes) || 0;
       const totalMinutes = durationHours * 60 + durationMinutes;
-      
+
+      if (totalMinutes <= 0) {
+        setTimeOverlap(null);
+        return;
+      }
+
       const bookingStart = new Date(year, month - 1, day, hoursNum, minutesNum, 0, 0);
-      const bookingEnd = new Date(bookingStart);
-      bookingEnd.setMinutes(bookingEnd.getMinutes() + totalMinutes);
-      
-      // Check against existing bookings for the same facility
-      const overlappingBookings = facilityBookings
-        .filter(booking => {
-          if (booking.facility_id !== selectedFacility.id) return false;
-          
-          const existingStart = new Date(booking.booking_date);
-          const existingDuration = booking.duration_minutes || (booking.duration_hours ? booking.duration_hours * 60 : 120);
-          const existingEnd = new Date(existingStart);
-          existingEnd.setMinutes(existingEnd.getMinutes() + existingDuration);
-          
-          // Check if there's overlap
-          return (bookingStart < existingEnd && bookingEnd > existingStart);
-        })
-        .map(booking => {
-          const existingStart = new Date(booking.booking_date);
-          const existingDuration = booking.duration_minutes || (booking.duration_hours ? booking.duration_hours * 60 : 120);
-          const existingEnd = new Date(existingStart);
-          existingEnd.setMinutes(existingEnd.getMinutes() + existingDuration);
-          return {
-            start: existingStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
-            end: existingEnd.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
-            status: booking.status
-          };
-        });
-      
+
+      const overlappingBookings = detectFacilityBookingConflicts(
+        facilityBookings,
+        selectedFacility.id,
+        bookingStart,
+        totalMinutes
+      );
+
       if (overlappingBookings.length > 0) {
-        const conflicts = overlappingBookings.map(b => `${b.start} - ${b.end} (${b.status})`).join(', ');
-        setTimeOverlap(`Time conflict detected! The facility is already booked during: ${conflicts}. Please choose a different time.`);
+        setTimeOverlap(buildConflictMessage(overlappingBookings));
       } else {
         setTimeOverlap(null);
       }
@@ -542,13 +585,6 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
     try {
       setLoading(true);
       
-      // Check for overlap before submitting (double-check in case button was clicked before state updated)
-      if (timeOverlap) {
-        alert(timeOverlap);
-        setLoading(false);
-        return;
-      }
-      
       // Validate inputs
       if (!bookingDate || !bookingTime) {
         alert('Please select a booking date and time.');
@@ -580,6 +616,49 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       // Validate duration
       if (totalMinutes <= 0) {
         alert('Please select a duration of at least 15 minutes.');
+        setLoading(false);
+        return;
+      }
+
+      // Validate overlap using current local cache first
+      const localConflicts = detectFacilityBookingConflicts(
+        facilityBookings,
+        facilityId,
+        localDate,
+        totalMinutes
+      );
+      if (localConflicts.length > 0) {
+        const message = buildConflictMessage(localConflicts);
+        setTimeOverlap(message);
+        alert(message);
+        setLoading(false);
+        return;
+      }
+
+      // Validate overlap against fresh DB snapshot to avoid race/stale state
+      let latestBookings: FacilityBooking[] = [];
+      let latest = await supabase
+        .from('facility_bookings')
+        .select('*')
+        .eq('facility_id', facilityId)
+        .in('status', ['approved', 'pending'])
+        .or('is_hidden.is.null,is_hidden.eq.false')
+        .order('booking_date', { ascending: true });
+      if (latest.error && (latest.error as any).code === '42703') {
+        latest = await supabase
+          .from('facility_bookings')
+          .select('*')
+          .eq('facility_id', facilityId)
+          .in('status', ['approved', 'pending'])
+          .order('booking_date', { ascending: true });
+      }
+      if (!latest.error) latestBookings = latest.data || [];
+
+      const freshConflicts = detectFacilityBookingConflicts(latestBookings, facilityId, localDate, totalMinutes);
+      if (freshConflicts.length > 0) {
+        const message = buildConflictMessage(freshConflicts);
+        setTimeOverlap(message);
+        alert(message);
         setLoading(false);
         return;
       }
@@ -764,7 +843,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   // Handle date click
   const handleDateClick = (date: Date | null) => {
     if (!date || isDatePast(date)) return;
-    setBookingDate(date.toISOString().split('T')[0]);
+    setBookingDate(toInputDateLocal(date));
     // Reset time to 12:00 AM when date is selected
     setBookingHour('12');
     setBookingMinute('0');
