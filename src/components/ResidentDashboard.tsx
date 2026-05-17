@@ -184,6 +184,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   const [profileSelfiePreviewUrl, setProfileSelfiePreviewUrl] = useState<string | null>(null);
   const [currentSelfieUrl, setCurrentSelfieUrl] = useState<string | null>(null);
   const [pendingSelfieUrl, setPendingSelfieUrl] = useState<string | null>(null);
+  const [imageModalUrl, setImageModalUrl] = useState<string | null>(null);
+  const [imageModalTitle, setImageModalTitle] = useState<string>('');
   const [bookingDate, setBookingDate] = useState('');
   const [bookingTime, setBookingTime] = useState('');
   const [bookingHour, setBookingHour] = useState('12');
@@ -220,13 +222,26 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       try {
         if (currentUser.selfie_image_path) {
           const { data, error } = await supabase.storage.from(VERIFICATION_BUCKET).createSignedUrl(currentUser.selfie_image_path, 60 * 60);
-          if (!error && data?.signedUrl) setCurrentSelfieUrl(data.signedUrl);
+          if (!error && data?.signedUrl) {
+            setCurrentSelfieUrl(data.signedUrl);
+          } else {
+            console.warn('createSignedUrl failed for selfie_image_path:', error);
+            // Fallback to public URL (works if bucket is public)
+            const { data: pub } = supabase.storage.from(VERIFICATION_BUCKET).getPublicUrl(currentUser.selfie_image_path);
+            if (pub?.publicUrl) setCurrentSelfieUrl(pub.publicUrl);
+          }
         } else {
           setCurrentSelfieUrl(null);
         }
         if ((currentUser as any).pending_selfie_path) {
           const { data, error } = await supabase.storage.from(VERIFICATION_BUCKET).createSignedUrl((currentUser as any).pending_selfie_path, 60 * 60);
-          if (!error && data?.signedUrl) setPendingSelfieUrl(data.signedUrl);
+          if (!error && data?.signedUrl) {
+            setPendingSelfieUrl(data.signedUrl);
+          } else {
+            console.warn('createSignedUrl failed for pending_selfie_path:', error);
+            const { data: pub } = supabase.storage.from(VERIFICATION_BUCKET).getPublicUrl((currentUser as any).pending_selfie_path);
+            if (pub?.publicUrl) setPendingSelfieUrl(pub.publicUrl);
+          }
         } else {
           setPendingSelfieUrl(null);
         }
@@ -237,6 +252,12 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
     };
     fetchSelfieUrls();
   }, [currentUser]);
+
+  const openImageModal = (url?: string | null, title?: string) => {
+    if (!url) return;
+    setImageModalTitle(title || '');
+    setImageModalUrl(url);
+  };
 
   // Update bookingTime when hour, minute, or AM/PM changes (convert 12-hour to 24-hour)
   useEffect(() => {
@@ -382,6 +403,14 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'paper_requests' }, () => {
         fetchPaperRequests();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${currentUser.id}` }, async () => {
+        try {
+          const { data } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+          if (data) onProfileUpdate(data as Profile);
+        } catch (err) {
+          console.warn('Failed to refresh profile after realtime update:', err);
+        }
       })
       .subscribe();
 
@@ -1296,6 +1325,23 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
           </div>
         )}
 
+        {/* Profile Image Modal - full image view for current/pending selfie */}
+        {imageModalUrl && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setImageModalUrl(null)}>
+            <div className="max-w-[90vw] max-h-[90vh] p-2" onClick={(e) => e.stopPropagation()}>
+              <div className="flex justify-end mb-2">
+                <button onClick={() => setImageModalUrl(null)} className="p-2 rounded-full bg-white/90 text-slate-700 hover:bg-white">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              {imageModalTitle && <div className="text-sm text-white mb-2 text-center">{imageModalTitle}</div>}
+              <img src={imageModalUrl} alt={imageModalTitle || 'Image preview'} className="w-full h-auto max-h-[80vh] object-contain rounded-lg shadow-2xl bg-white" />
+            </div>
+          </div>
+        )}
+
         {activeTab === 'news' && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm min-h-[min(70vh,720px)] flex flex-col">
@@ -1614,11 +1660,13 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <div className="mt-2">
                           <div className="w-28 h-28 rounded-full overflow-hidden border border-gray-200">
                             {currentSelfieUrl ? (
-                              // eslint-disable-next-line jsx-a11y/img-redundant-alt
-                              <img src={currentSelfieUrl} alt="Current selfie" className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full bg-gray-50 flex items-center justify-center text-gray-400">No photo</div>
-                            )}
+                                <button type="button" onClick={() => openImageModal(currentSelfieUrl, 'Profile Photo')} className="w-full h-full">
+                                  {/* eslint-disable-next-line jsx-a11y/img-redundant-alt */}
+                                  <img src={currentSelfieUrl} alt="Current selfie" className="w-full h-full object-cover" />
+                                </button>
+                              ) : (
+                                <div className="w-full h-full bg-gray-50 flex items-center justify-center text-gray-400">No photo</div>
+                              )}
                           </div>
                           {(currentUser as any).pending_selfie_status === 'pending' && (
                             <div className="mt-2 text-sm text-amber-700">Pending new photo: awaiting admin approval</div>
@@ -1633,7 +1681,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                             <div className="mt-2">
                               <p className="text-xs text-gray-500">Pending preview:</p>
                               <div className="w-28 h-28 rounded-md overflow-hidden border border-gray-200 mt-1">
-                                <img src={pendingSelfieUrl} alt="Pending selfie preview" className="w-full h-full object-cover" />
+                                <button type="button" onClick={() => openImageModal(pendingSelfieUrl, 'Pending Selfie Preview')} className="w-full h-full">
+                                  <img src={pendingSelfieUrl} alt="Pending selfie preview" className="w-full h-full object-cover" />
+                                </button>
                               </div>
                             </div>
                           )}

@@ -227,6 +227,28 @@ function App() {
     };
   }, []);
 
+  // Keep top-level profile in sync with DB changes (e.g., admin approves selfie)
+  useEffect(() => {
+    if (!profile) return;
+    const channel = supabase
+      .channel(`profile-sync-${profile.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${profile.id}` }, async () => {
+        try {
+          const { data: refreshed, error } = await supabase.from('profiles').select('*').eq('id', profile.id).maybeSingle();
+          if (!error && refreshed) {
+            setProfile(refreshed as any);
+          }
+        } catch (err) {
+          console.warn('Failed to refresh profile after realtime update:', err);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [profile?.id]);
+
   useEffect(() => {
     if (!pkceExchangePending) return;
     const id = window.setTimeout(() => setPkceExchangePending(false), 8000);
