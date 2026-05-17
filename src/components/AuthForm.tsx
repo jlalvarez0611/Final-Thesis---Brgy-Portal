@@ -3,6 +3,8 @@ import { supabase, getAuthEmailRedirectUrl, getPasswordResetRedirectUrl } from '
 import { LogIn, UserPlus, X, FileText } from 'lucide-react';
 
 import { Profile } from '../lib/supabase';
+import { isValidEmail } from '../lib/validators';
+import formatPhilippineMobile from '../lib/format';
 
 interface AuthFormProps {
   onAuthSuccess: (profile: Profile) => void;
@@ -59,7 +61,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
   const [civilStatus, setCivilStatus] = useState('');
   const [nationality, setNationality] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
-  const [homeNo, setHomeNo] = useState('');
+  const [address, setAddress] = useState('');
   const [emailReg, setEmailReg] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -140,6 +142,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
             nationality: '',
             mobile_number: '',
             home_no: '',
+            address: '',
             id_image_path: null,
             selfie_image_path: null,
             role: 'resident',
@@ -211,6 +214,16 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
 
     if (!emailReg.trim()) {
       setError('Email address is required.');
+      return;
+    }
+
+    if (!isValidEmail(emailReg)) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+
+    if (!mobileNumber || !/^[0-9]{10}$/.test(mobileNumber)) {
+      setError('Mobile number must contain 11 digits in total, including the leading 0 (e.g. 09171234567).');
       return;
     }
 
@@ -308,8 +321,9 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
           place_of_birth: placeOfBirth,
           civil_status: civilStatus,
           nationality,
-          mobile_number: mobileNumber,
-          home_no: homeNo.trim(),
+          mobile_number: mobileNumber ? formatPhilippineMobile(mobileNumber.trim()) : '',
+          home_no: address.trim(),
+          address: address.trim(),
           id_image_path: idImagePath,
           selfie_image_path: selfieImagePath,
           role: 'resident',
@@ -342,7 +356,7 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
         setCivilStatus('');
         setNationality('');
         setMobileNumber('');
-        setHomeNo('');
+        setAddress('');
         setEmailReg('');
         setPassword('');
         setConfirmPassword('');
@@ -775,7 +789,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   <input
                     type="text"
                     value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
+                    onChange={(e) => setLastName(e.target.value.slice(0, 50))}
+                    maxLength={50}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                     required
                   />
@@ -787,7 +802,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   <input
                     type="text"
                     value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
+                    onChange={(e) => setFirstName(e.target.value.slice(0, 50))}
+                    maxLength={50}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                     required
                   />
@@ -802,7 +818,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   <input
                     type="text"
                     value={middleName}
-                    onChange={(e) => setMiddleName(e.target.value)}
+                    onChange={(e) => setMiddleName(e.target.value.slice(0, 50))}
+                    maxLength={50}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   />
                 </div>
@@ -813,7 +830,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   <input
                     type="text"
                     value={suffix}
-                    onChange={(e) => setSuffix(e.target.value)}
+                    onChange={(e) => setSuffix(e.target.value.slice(0, 10))}
+                    maxLength={10}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   />
                 </div>
@@ -856,8 +874,9 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                 </label>
                 <input
                   type="text"
-                  value={placeOfBirth}
-                  onChange={(e) => setPlaceOfBirth(e.target.value)}
+                    value={placeOfBirth}
+                    onChange={(e) => setPlaceOfBirth(e.target.value.slice(0, 100))}
+                    maxLength={100}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   required
                 />
@@ -888,7 +907,8 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   <input
                     type="text"
                     value={nationality}
-                    onChange={(e) => setNationality(e.target.value)}
+                    onChange={(e) => setNationality(e.target.value.slice(0, 50))}
+                    maxLength={50}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                     required
                   />
@@ -906,23 +926,38 @@ export function AuthForm({ onAuthSuccess, initialMode = 'login', onBack, forceRe
                   type="tel"
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  value={mobileNumber}
-                  onChange={(e) => setMobileNumber(e.target.value.replace(/[^0-9]/g, ''))}
+                  value={mobileNumber ? formatPhilippineMobile(mobileNumber) : '+63 '}
+                  onChange={(e) => {
+                    let digits = (e.target.value || '').replace(/\D/g, '');
+                    // Remove leading country code 63 if present
+                    if (digits.startsWith('63')) {
+                      digits = digits.slice(2);
+                    }
+                    // If user types/pastes a leading 0 (e.g. 0917...), remove that 0 immediately
+                    // because the input is stored with the +63 prefix.
+                    if (digits.startsWith('0')) {
+                      digits = digits.slice(1);
+                    }
+                    // Finally, limit to 10 digits
+                    digits = digits.slice(0, 10);
+                    setMobileNumber(digits);
+                  }}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
                   required
-                  placeholder="e.g. 09171234567"
+                  placeholder="e.g. +63 9171234567"
                 />
               </div>
               <div className="mb-4">
                 <label className="block text-gray-700 text-sm font-medium mb-2">
-                  Home No.
+                  Address
                 </label>
                 <input
                   type="text"
-                  value={homeNo}
-                  onChange={(e) => setHomeNo(e.target.value)}
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value.slice(0, 150))}
+                  maxLength={150}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
-                  placeholder="e.g. 123"
+                  placeholder="e.g. 123 Main St, Barangay Tubigan"
                 />
               </div>
 

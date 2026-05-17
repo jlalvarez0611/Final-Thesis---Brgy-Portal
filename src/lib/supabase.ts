@@ -235,6 +235,8 @@ export interface Profile {
   mobile_number: string;
   id_image_path?: string | null;
   selfie_image_path?: string | null;
+  pending_selfie_path?: string | null;
+  pending_selfie_status?: 'pending' | 'approved' | 'rejected' | null;
   role: 'admin' | 'resident';
   home_no?: string;
   address?: string;

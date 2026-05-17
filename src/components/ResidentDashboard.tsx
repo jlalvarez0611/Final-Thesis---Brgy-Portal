@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase, Profile } from '../lib/supabase';
+import { isValidEmail } from '../lib/validators';
 import { LogOut, User, Calendar, Newspaper, ArrowLeft, Users2, FileText, Building2, Trash2, ExternalLink, Download } from 'lucide-react';
 import { ResidentCalendar } from './ResidentCalendar';
 import { EventsNewsHeading } from './EventsNewsHeading';
 import { LucideIconByName, NEWS_EVENTS_LIST_STYLES } from '../lib/newsEventIcons';
+import formatPhilippineMobile from '../lib/format';
 
 interface Event {
   id: string;
@@ -39,6 +41,8 @@ interface PaperRequest {
   payment_code?: string | null;
   receipt_url?: string | null;
   document_url?: string | null;
+  control_number?: string | null;
+  request_reason?: string | null;
   created_at: string;
   updated_at?: string | null;
 }
@@ -151,6 +155,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
     contact_number: profile.contact_number || '',
   });
 
+  const VERIFICATION_BUCKET = 'resident-verification';
+
+
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<Event[]>([]);
@@ -159,6 +166,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   const [officials, setOfficials] = useState<Official[]>([]);
   const [facilities, setFacilities] = useState<Facility[]>([]);
   const [paperRequests, setPaperRequests] = useState<PaperRequest[]>([]);
+  const [paperRequestReason, setPaperRequestReason] = useState('');
+  const [selectedPaperType, setSelectedPaperType] = useState<PaperRequest['paper_type'] | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'events' | 'news' | 'officials' | 'papers' | 'facilities' | 'calendar' | 'transparency'>('events');
   const [canGoBack, setCanGoBack] = useState(false);
   const historyInitialized = useRef(false);
@@ -171,6 +180,10 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   const [facilityBookings, setFacilityBookings] = useState<FacilityBooking[]>([]);
   const [myFacilityBookings, setMyFacilityBookings] = useState<(FacilityBooking & { facility_name?: string })[]>([]);
   const [formData, setFormData] = useState(buildFormDataFromProfile(currentUser));
+  const [profileSelfieFile, setProfileSelfieFile] = useState<File | null>(null);
+  const [profileSelfiePreviewUrl, setProfileSelfiePreviewUrl] = useState<string | null>(null);
+  const [currentSelfieUrl, setCurrentSelfieUrl] = useState<string | null>(null);
+  const [pendingSelfieUrl, setPendingSelfieUrl] = useState<string | null>(null);
   const [bookingDate, setBookingDate] = useState('');
   const [bookingTime, setBookingTime] = useState('');
   const [bookingHour, setBookingHour] = useState('12');
@@ -202,6 +215,27 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   useEffect(() => {
     setFormData(buildFormDataFromProfile(currentUser));
+    // fetch signed URLs for current selfie and pending selfie if available
+    const fetchSelfieUrls = async () => {
+      try {
+        if (currentUser.selfie_image_path) {
+          const { data, error } = await supabase.storage.from(VERIFICATION_BUCKET).createSignedUrl(currentUser.selfie_image_path, 60 * 60);
+          if (!error && data?.signedUrl) setCurrentSelfieUrl(data.signedUrl);
+        } else {
+          setCurrentSelfieUrl(null);
+        }
+        if ((currentUser as any).pending_selfie_path) {
+          const { data, error } = await supabase.storage.from(VERIFICATION_BUCKET).createSignedUrl((currentUser as any).pending_selfie_path, 60 * 60);
+          if (!error && data?.signedUrl) setPendingSelfieUrl(data.signedUrl);
+        } else {
+          setPendingSelfieUrl(null);
+        }
+      } catch (err) {
+        setCurrentSelfieUrl(null);
+        setPendingSelfieUrl(null);
+      }
+    };
+    fetchSelfieUrls();
   }, [currentUser]);
 
   // Update bookingTime when hour, minute, or AM/PM changes (convert 12-hour to 24-hour)
@@ -542,12 +576,35 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
   };
 
   const handleSave = async () => {
+    // validate email before saving
+    if (formData.email && !isValidEmail(formData.email)) {
+      alert('Please enter a valid email address.');
+      return;
+    }
+
     setLoading(true);
     try {
       const computedFullName = `${formData.first_name} ${formData.middle_name ? `${formData.middle_name} ` : ''}${formData.last_name}${formData.suffix ? ` ${formData.suffix}` : ''}`.trim();
       const finalFullName = computedFullName || formData.full_name;
+      // If a new selfie file was selected, upload it to storage and set as pending
+      let pendingSelfiePath: string | null = null;
+      if (profileSelfieFile) {
+        try {
+          const ext = (profileSelfieFile.name.split('.').pop() || 'jpg').toLowerCase();
+          const safeExt = ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
+          const dest = `${currentUser.id}/pending-selfie-${Date.now()}.${safeExt}`;
+          const { error: uploadError } = await supabase.storage.from(VERIFICATION_BUCKET).upload(dest, profileSelfieFile, { upsert: false, contentType: profileSelfieFile.type });
+          if (uploadError) throw uploadError;
+          pendingSelfiePath = dest;
+        } catch (err) {
+          console.error('Failed to upload pending selfie:', err);
+          alert('Failed to upload selfie. Please try again.');
+          setLoading(false);
+          return;
+        }
+      }
 
-      const { data, error } = await supabase.from('profiles').update({
+      const updatePayload: any = {
         full_name: finalFullName,
         first_name: formData.first_name,
         middle_name: formData.middle_name,
@@ -563,7 +620,14 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
         email: formData.email,
         address: formData.address,
         contact_number: formData.contact_number,
-      }).eq('id', currentUser.id).select().single();
+      };
+
+      if (pendingSelfiePath) {
+        updatePayload.pending_selfie_path = pendingSelfiePath;
+        updatePayload.pending_selfie_status = 'pending';
+      }
+
+      const { data, error } = await supabase.from('profiles').update(updatePayload).eq('id', currentUser.id).select().single();
       if (error) throw error;
       onProfileUpdate(data);
       setIsEditing(false);
@@ -579,6 +643,12 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
 
   const handlePaperRequest = async (paperType: 'barangay_clearance' | 'certificate_of_indigency' | 'proof_of_residency', paymentMethod: 'online' | 'cash') => {
     try {
+      const reason = paperRequestReason.trim();
+      if (!reason) {
+        alert('Please provide a reason for your document request.');
+        return;
+      }
+
       setLoading(true);
       const paymentCode = paymentMethod === 'online' ? `PAY-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}` : null;
       const { error } = await supabase.from('paper_requests').insert({
@@ -587,9 +657,12 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
         status: 'pending',
         payment_status: paymentMethod === 'online' ? 'pending' : 'cash_pending',
         payment_code: paymentCode,
+        request_reason: reason,
       }).select().single();
       if (error) throw error;
       await fetchPaperRequests();
+      setPaperRequestReason('');
+      setSelectedPaperType(null);
       alert(paymentMethod === 'online' ? `Request submitted! Your payment code is: ${paymentCode}` : 'Request submitted!');
     } catch (error) {
       alert('Failed to submit request. Please try again.');
@@ -1319,7 +1392,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.first_name}
-                          onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, first_name: e.target.value.slice(0, 50) })}
+                          maxLength={50}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1328,7 +1402,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.last_name}
-                          onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, last_name: e.target.value.slice(0, 50) })}
+                          maxLength={50}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1339,7 +1414,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.middle_name}
-                          onChange={(e) => setFormData({ ...formData, middle_name: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, middle_name: e.target.value.slice(0, 50) })}
+                          maxLength={50}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1348,7 +1424,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.suffix}
-                          onChange={(e) => setFormData({ ...formData, suffix: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, suffix: e.target.value.slice(0, 10) })}
+                          maxLength={10}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1382,7 +1459,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                       <input
                         type="text"
                         value={formData.place_of_birth}
-                        onChange={(e) => setFormData({ ...formData, place_of_birth: e.target.value })}
+                        onChange={(e) => setFormData({ ...formData, place_of_birth: e.target.value.slice(0, 100) })}
+                        maxLength={100}
                         className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                       />
                     </div>
@@ -1406,7 +1484,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.nationality}
-                          onChange={(e) => setFormData({ ...formData, nationality: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, nationality: e.target.value.slice(0, 50) })}
+                          maxLength={50}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1417,7 +1496,16 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.mobile_number}
-                          onChange={(e) => setFormData({ ...formData, mobile_number: e.target.value })}
+                          onChange={(e) => {
+                            const digits = (e.target.value || '').replace(/\D/g, '');
+                            // Normalize leading country code or leading zero
+                            let d = digits;
+                            if (d.startsWith('63')) d = d.slice(2);
+                            if (d.startsWith('0')) d = d.slice(1);
+                            const final = d.slice(0, 10);
+                            setFormData({ ...formData, mobile_number: final ? formatPhilippineMobile(final) : '' });
+                          }}
+                          maxLength={20}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1426,7 +1514,15 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.contact_number}
-                          onChange={(e) => setFormData({ ...formData, contact_number: e.target.value })}
+                          onChange={(e) => {
+                            const digits = (e.target.value || '').replace(/\D/g, '');
+                            let d = digits;
+                            if (d.startsWith('63')) d = d.slice(2);
+                            if (d.startsWith('0')) d = d.slice(1);
+                            const final = d.slice(0, 10);
+                            setFormData({ ...formData, contact_number: final ? formatPhilippineMobile(final) : '' });
+                          }}
+                          maxLength={20}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1436,9 +1532,41 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                       <input
                         type="text"
                         value={formData.address}
-                        onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                        onChange={(e) => setFormData({ ...formData, address: e.target.value.slice(0, 150) })}
+                        maxLength={150}
                         className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                       />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">Profile Photo (Selfie)</label>
+                      <div className="flex items-center gap-4">
+                        <div className="w-24 h-24 bg-gray-100 rounded-full overflow-hidden flex items-center justify-center border border-gray-200">
+                          {profileSelfiePreviewUrl ? (
+                            <img src={profileSelfiePreviewUrl} alt="Preview" className="w-full h-full object-cover" />
+                          ) : currentSelfieUrl ? (
+                            <img src={currentSelfieUrl} alt="Current selfie" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="text-xs text-gray-400">No photo</div>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0] || null;
+                              setProfileSelfieFile(f);
+                              if (f) {
+                                const url = URL.createObjectURL(f);
+                                setProfileSelfiePreviewUrl(url);
+                              } else {
+                                setProfileSelfiePreviewUrl(null);
+                              }
+                            }}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Upload a new selfie to request a profile photo change (admin approval required).</p>
+                        </div>
+                      </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
@@ -1446,7 +1574,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="text"
                           value={formData.username}
-                          onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, username: e.target.value.slice(0, 100) })}
+                          maxLength={100}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1455,7 +1584,8 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                         <input
                           type="email"
                           value={formData.email}
-                          onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, email: e.target.value.slice(0, 254) })}
+                          maxLength={254}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none"
                         />
                       </div>
@@ -1479,6 +1609,36 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                 ) : (
                   <div className="space-y-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="p-5 rounded-xl border border-gray-200 bg-gradient-to-br from-gray-50 to-white order-first md:order-none">
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Profile Photo</p>
+                        <div className="mt-2">
+                          <div className="w-28 h-28 rounded-full overflow-hidden border border-gray-200">
+                            {currentSelfieUrl ? (
+                              // eslint-disable-next-line jsx-a11y/img-redundant-alt
+                              <img src={currentSelfieUrl} alt="Current selfie" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full bg-gray-50 flex items-center justify-center text-gray-400">No photo</div>
+                            )}
+                          </div>
+                          {(currentUser as any).pending_selfie_status === 'pending' && (
+                            <div className="mt-2 text-sm text-amber-700">Pending new photo: awaiting admin approval</div>
+                          )}
+                          {(currentUser as any).pending_selfie_status === 'rejected' && (
+                            <div className="mt-2 text-sm text-red-600">Last photo change was rejected by admin</div>
+                          )}
+                          {(currentUser as any).pending_selfie_status === 'approved' && (
+                            <div className="mt-2 text-sm text-green-600">Last photo change was approved</div>
+                          )}
+                          {pendingSelfieUrl && (
+                            <div className="mt-2">
+                              <p className="text-xs text-gray-500">Pending preview:</p>
+                              <div className="w-28 h-28 rounded-md overflow-hidden border border-gray-200 mt-1">
+                                <img src={pendingSelfieUrl} alt="Pending selfie preview" className="w-full h-full object-cover" />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                       <div className="p-5 rounded-xl border border-gray-200 bg-gradient-to-br from-gray-50 to-white">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">First Name</p>
                         <p className="text-sm font-semibold text-gray-900 mt-2">{currentUser.first_name || '—'}</p>
@@ -1529,7 +1689,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                       </div>
                       <div className="p-5 rounded-xl border border-gray-200 bg-gradient-to-br from-gray-50 to-white">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Mobile Number</p>
-                        <p className="text-sm font-semibold text-gray-900 mt-2">{currentUser.mobile_number || '—'}</p>
+                        <p className="text-sm font-semibold text-gray-900 mt-2">{currentUser.mobile_number ? formatPhilippineMobile(currentUser.mobile_number) : '—'}</p>
                       </div>
                       <div className="p-5 rounded-xl border border-gray-200 bg-gradient-to-br from-gray-50 to-white">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Address</p>
@@ -1537,7 +1697,7 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                       </div>
                       <div className="p-5 rounded-xl border border-gray-200 bg-gradient-to-br from-gray-50 to-white">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact Number</p>
-                        <p className="text-sm font-semibold text-gray-900 mt-2">{currentUser.contact_number || '—'}</p>
+                        <p className="text-sm font-semibold text-gray-900 mt-2">{currentUser.contact_number ? formatPhilippineMobile(currentUser.contact_number) : '—'}</p>
                       </div>
                     </div>
                     <div>
@@ -1741,38 +1901,74 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                   <h3 className="text-sm font-semibold text-slate-900 mb-4">Request New Document</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                     <button
-                      onClick={() => {
-                        const shouldRequest = window.confirm('Do you want to request a Barangay Clearance?');
-                        if (!shouldRequest) return;
-                        handlePaperRequest('barangay_clearance', 'cash');
-                      }}
+                      onClick={() => setSelectedPaperType('barangay_clearance')}
                       disabled={loading}
-                      className="p-5 border border-slate-300 rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 bg-slate-50"
+                      className={`p-5 border rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 ${selectedPaperType === 'barangay_clearance' ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
                     >
                       <FileText className="w-6 h-6 text-slate-600 mx-auto mb-2" />
                       <p className="font-medium text-slate-900 text-sm">Barangay Clearance</p>
                     </button>
                     <button
-                      onClick={() => {
-                        handlePaperRequest('certificate_of_indigency', 'cash');
-                      }}
+                      onClick={() => setSelectedPaperType('certificate_of_indigency')}
                       disabled={loading}
-                      className="p-5 border border-slate-300 rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 bg-slate-50"
+                      className={`p-5 border rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 ${selectedPaperType === 'certificate_of_indigency' ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
                     >
                       <FileText className="w-6 h-6 text-slate-600 mx-auto mb-2" />
                       <p className="font-medium text-slate-900 text-sm">Certificate of Indigency</p>
                     </button>
                     <button
-                      onClick={() => {
-                        handlePaperRequest('proof_of_residency', 'cash');
-                      }}
+                      onClick={() => setSelectedPaperType('proof_of_residency')}
                       disabled={loading}
-                      className="p-5 border border-slate-300 rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 bg-slate-50"
+                      className={`p-5 border rounded-lg hover:shadow-md hover:border-slate-400 transition-all disabled:opacity-50 ${selectedPaperType === 'proof_of_residency' ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
                     >
                       <FileText className="w-6 h-6 text-slate-600 mx-auto mb-2" />
                       <p className="font-medium text-slate-900 text-sm">Proof of Residency</p>
                     </button>
                   </div>
+
+                  {selectedPaperType ? (
+                    <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                      <div className="flex items-center justify-between gap-3 mb-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Selected document</p>
+                          <p className="text-base text-slate-700 capitalize">{selectedPaperType.replace(/_/g, ' ')}</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSelectedPaperType(null);
+                            setPaperRequestReason('');
+                          }}
+                          className="text-sm text-slate-600 hover:text-slate-900"
+                        >
+                          Change
+                        </button>
+                      </div>
+                      <div className="mb-4">
+                        <label htmlFor="paper-request-reason" className="block text-sm font-medium text-slate-700 mb-2">
+                          Reason for request
+                        </label>
+                        <textarea
+                          id="paper-request-reason"
+                          value={paperRequestReason}
+                          onChange={(e) => setPaperRequestReason(e.target.value)}
+                          rows={3}
+                          className="w-full rounded-lg border border-slate-300 p-3 text-sm text-slate-900 focus:border-blue-500 focus:ring-blue-500"
+                          placeholder="Please explain why you need this document"
+                        />
+                      </div>
+                      <button
+                        onClick={() => handlePaperRequest(selectedPaperType, 'cash')}
+                        disabled={loading}
+                        className="px-5 py-3 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition-colors"
+                      >
+                        Request {selectedPaperType.replace(/_/g, ' ')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-slate-600">
+                      Select a document type above to continue with your request.
+                    </div>
+                  )}
                 </div>
                 <div className="border-t border-slate-300 pt-6">
                   <h3 className="text-sm font-semibold text-slate-900 mb-4">My Requests</h3>
@@ -1814,6 +2010,9 @@ export function ResidentDashboard({ currentUser, onLogout, onProfileUpdate, onBa
                                 <p className="text-xs text-blue-700 mt-1">Note: Your request is marked done by the admin.</p>
                               )}
                               {request.payment_code && (<p className="text-xs text-slate-600 mt-1">Payment Code: <span className="font-mono font-semibold">{request.payment_code}</span></p>)}
+                              {request.request_reason && (
+                                <p className="text-xs text-slate-600 mt-1"><strong>Reason:</strong> {request.request_reason}</p>
+                              )}
                               {request.receipt_url && (<a href={request.receipt_url} target="_blank" rel="noopener noreferrer" className="text-slate-700 text-xs hover:underline mt-1 block">View Receipt →</a>)}
                             </div>
 

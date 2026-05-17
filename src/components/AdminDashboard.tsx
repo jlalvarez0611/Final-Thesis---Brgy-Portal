@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase, Profile } from '../lib/supabase';
-import { LogOut, Users, CheckCircle, XCircle, Trash2, Calendar, Newspaper, Plus, Edit2, Save, X, UserCheck, Building2, Clock, FileText, DollarSign, Upload, FileUp } from 'lucide-react';
+import { LogOut, Users, CheckCircle, XCircle, Trash2, Calendar, Newspaper, Plus, Edit2, Save, X, UserCheck, Building2, Clock, FileText, DollarSign, Upload, FileUp, Printer } from 'lucide-react';
+import formatPhilippineMobile, { formatControlNumber } from '../lib/format';
 import {
   LucideIconByName,
   IconPickerGrid,
@@ -78,6 +79,8 @@ interface PaperRequest {
   payment_code?: string;
   receipt_url?: string;
   document_url?: string;
+  control_number?: string | null;
+  request_reason?: string | null;
   requester_name?: string | null;
   requester_email?: string | null;
   requester_phone?: string | null;
@@ -85,7 +88,18 @@ interface PaperRequest {
   is_hidden?: boolean;
   created_at: string;
   updated_at: string;
-  profiles?: { full_name: string; email: string; contact_number: string };
+  profiles?: {
+    full_name: string;
+    email: string;
+    contact_number: string;
+    home_no?: string | null;
+    address?: string | null;
+    sex?: string | null;
+    date_of_birth?: string | null;
+    place_of_birth?: string | null;
+    civil_status?: string | null;
+    nationality?: string | null;
+  };
 }
 
 interface TransparencyItem {
@@ -126,6 +140,17 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   const [residentPage, setResidentPage] = useState(1);
   const [paperPage, setPaperPage] = useState(1);
   const [editingPaperRequest, setEditingPaperRequest] = useState<PaperRequest | null>(null);
+  const [showWalkInPrintForm, setShowWalkInPrintForm] = useState(false);
+  const [walkInPaperType, setWalkInPaperType] = useState<PaperRequest['paper_type']>('barangay_clearance');
+  const [walkInRequesterName, setWalkInRequesterName] = useState('');
+  const [walkInRequesterAddress, setWalkInRequesterAddress] = useState('');
+  const [walkInRequesterPhone, setWalkInRequesterPhone] = useState('');
+  const [walkInRequestReason, setWalkInRequestReason] = useState('');
+  const [walkInSex, setWalkInSex] = useState('');
+  const [walkInDob, setWalkInDob] = useState('');
+  const [walkInPob, setWalkInPob] = useState('');
+  const [walkInCivilStatus, setWalkInCivilStatus] = useState('');
+  const [walkInNationality, setWalkInNationality] = useState('');
   const [showEventForm, setShowEventForm] = useState(false);
   const [showNewsForm, setShowNewsForm] = useState(false);
   const [showTransparencyForm, setShowTransparencyForm] = useState(false);
@@ -302,6 +327,57 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
     }
     setVerificationPreviewTitle(title);
     setVerificationPreviewUrl(data.signedUrl);
+  };
+
+  const handleApprovePendingSelfie = async (residentId: string) => {
+    try {
+      // fetch resident to get pending path
+      const { data: profile, error: pErr } = await supabase.from('profiles').select('*').eq('id', residentId).maybeSingle();
+      if (pErr) throw pErr;
+      const pending = (profile as any)?.pending_selfie_path;
+      if (!pending) {
+        alert('No pending selfie found for this resident.');
+        return;
+      }
+
+      const { error: updErr } = await supabase.from('profiles').update({
+        selfie_image_path: pending,
+        pending_selfie_path: null,
+        pending_selfie_status: 'approved',
+      }).eq('id', residentId);
+      if (updErr) throw updErr;
+      alert('Pending selfie approved and applied to profile.');
+      await fetchResidents();
+    } catch (err) {
+      console.error('Approve pending selfie failed:', err);
+      alert('Failed to approve pending selfie. Check console for details.');
+    }
+  };
+
+  const handleRejectPendingSelfie = async (residentId: string) => {
+    try {
+      const { data: profile, error: pErr } = await supabase.from('profiles').select('*').eq('id', residentId).maybeSingle();
+      if (pErr) throw pErr;
+      const pending = (profile as any)?.pending_selfie_path;
+      if (!pending) {
+        alert('No pending selfie found for this resident.');
+        return;
+      }
+      // remove file from storage
+      const { error: remErr } = await supabase.storage.from(VERIFICATION_BUCKET).remove([pending]);
+      if (remErr) console.warn('Failed to remove pending selfie from storage:', remErr);
+
+      const { error: updErr } = await supabase.from('profiles').update({
+        pending_selfie_path: null,
+        pending_selfie_status: 'rejected',
+      }).eq('id', residentId);
+      if (updErr) throw updErr;
+      alert('Pending selfie rejected.');
+      await fetchResidents();
+    } catch (err) {
+      console.error('Reject pending selfie failed:', err);
+      alert('Failed to reject pending selfie. Check console for details.');
+    }
   };
 
   useEffect(() => {
@@ -733,7 +809,14 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
           profiles:resident_id (
             full_name,
             email,
-            contact_number
+            contact_number,
+            home_no,
+            address,
+            sex,
+            date_of_birth,
+            place_of_birth,
+            civil_status,
+            nationality
           )
         `);
       if (visibilityFilter.paperApprovals === 'active') query = query.or('is_hidden.is.null,is_hidden.eq.false');
@@ -748,7 +831,14 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
           profiles:resident_id (
             full_name,
             email,
-            contact_number
+            contact_number,
+            home_no,
+            address,
+            sex,
+            date_of_birth,
+            place_of_birth,
+            civil_status,
+            nationality
           )
         `)
           .order('created_at', { ascending: false });
@@ -844,13 +934,379 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
   };
 
   // approve request immediately
+  const formatPrintableRequest = (request: PaperRequest) => {
+    const title = request.paper_type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const requestedAt = new Date().toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const requesterName = request.resident_id
+      ? request.profiles?.full_name || 'Unknown'
+      : request.requester_name || 'Unknown';
+    const address = request.resident_id
+      ? [request.profiles?.home_no, request.profiles?.address].filter(Boolean).join(' ').trim() || 'N/A'
+      : request.requester_address || 'N/A';
+    const contactRaw = request.resident_id
+      ? request.profiles?.contact_number || ''
+      : request.requester_phone || '';
+    const contact = contactRaw ? formatPhilippineMobile(contactRaw) : 'N/A';
+    const sex = request.resident_id ? request.profiles?.sex || 'N/A' : 'N/A';
+    const dob = request.resident_id ? request.profiles?.date_of_birth || 'N/A' : 'N/A';
+    const pob = request.resident_id ? request.profiles?.place_of_birth || 'N/A' : 'N/A';
+    const civilStatus = request.resident_id ? request.profiles?.civil_status || 'N/A' : 'N/A';
+    const nationality = request.resident_id ? request.profiles?.nationality || 'N/A' : 'N/A';
+    const reason = request.request_reason || 'N/A';
+    const controlNumber = request.control_number || 'N/A';
+    const documentParagraph = (() => {
+      if (request.paper_type === 'barangay_clearance') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is a bonafide resident of Barangay Tubigan. This Barangay Clearance is issued for the purpose of <span class="blank">${reason}</span>, and may be presented to any government office, employer, or institution requiring proof of good standing in the community.`;
+      }
+      if (request.paper_type === 'certificate_of_indigency') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is a resident of Barangay Tubigan who is in need of financial support. This Certificate of Indigency is issued for the purpose of <span class="blank">${reason}</span>, and is intended to attest to the individual's current economic condition for qualification to receive assistance, concessions, or benefits.`;
+      }
+      if (request.paper_type === 'proof_of_residency') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, currently resides within Barangay Tubigan. This Proof of Residency is issued for the purpose of <span class="blank">${reason}</span>, and may be used to establish domicile for official transactions, school enrollment, or other legal requirements.`;
+      }
+      return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is requesting this document for <span class="blank">${reason}</span>, based on the records maintained by Barangay Tubigan.`;
+    })();
+
+    const bodyHtml = `
+      <html>
+        <head>
+          <title></title>
+          <style>
+            body { font-family: 'Times New Roman', Times, serif; margin: 32px; color: #111827; }
+            .header-row { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+            .control-number { font-size: 12px; color: #111827; font-weight: 700; letter-spacing: 0.06em; }
+            .control-number span { display: inline-block; min-width: 180px; text-align: right; }
+            .header { text-align: center; margin-bottom: 18px; }
+            .header h1 { font-size: 30px; margin: 0; letter-spacing: 0.12em; }
+            .header p { margin: 4px 0; color: #374151; font-size: 14px; }
+            .section { margin-bottom: 24px; }
+            .section h2 { font-size: 14px; margin-bottom: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #111827; }
+            .paragraph { margin-bottom: 18px; text-align: justify; line-height: 1.7; font-size: 14px; }
+            .blank { display: inline-block; min-width: 160px; border-bottom: 1px solid #111827; padding: 0 4px; font-weight: 700; }
+            .fields { margin-top: 12px; }
+            .field { margin-bottom: 10px; }
+            .field strong { display: inline-block; width: 180px; color: #111827; }
+            .signature-line { margin-top: 28px; }
+            .signature-line div { margin-bottom: 28px; }
+            .signature-line span { display: inline-block; min-width: 280px; border-bottom: 1px solid #111827; padding: 0 4px; }
+            .footer { margin-top: 34px; border-top: 1px solid #d1d5db; padding-top: 14px; color: #4b5563; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="header-row">
+            <div class="control-number"><strong>Control No.:</strong> <span>${controlNumber}</span></div>
+          </div>
+          <div class="header">
+            <p>Republic of the Philippines</p>
+            <p>Province of Pampanga</p>
+            <p>Municipality of Florinda</p>
+            <h1>Barangay Tubigan</h1>
+            <p>${title}</p>
+          </div>
+          <div class="section">
+            <p class="paragraph">
+              ${documentParagraph}
+            </p>
+            <p class="paragraph">
+              The above-named requester is registered with Barangay Tubigan and has the following information on file: sex <span class="blank">${sex}</span>, date of birth <span class="blank">${dob}</span>, place of birth <span class="blank">${pob}</span>, civil status <span class="blank">${civilStatus}</span>, and nationality <span class="blank">${nationality}</span>.
+            </p>
+            <p class="paragraph">
+              Issued this <span class="blank">${requestedAt}</span> in Barangay Tubigan, Florinda, Pampanga, for official use and approval of the appropriate barangay authorities.
+            </p>
+          </div>
+          <div class="section fields">
+            <div class="field"><strong>Document requested:</strong> <span class="blank">${title}</span></div>
+            <div class="field"><strong>Control number:</strong> <span class="blank">${controlNumber}</span></div>
+            <div class="field"><strong>Request reason:</strong> <span class="blank">${reason}</span></div>
+          </div>
+          <div class="section signature-line">
+            <div>
+              <strong>Prepared by:</strong> <span></span>
+            </div>
+            <div>
+              <strong>Approved by:</strong> <span></span>
+            </div>
+            <div>
+              <strong>Signature over printed name:</strong> <span></span>
+            </div>
+          </div>
+          <div class="footer">Generated from the Barangay Tubigan Florinda portal.</div>
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+    return bodyHtml;
+  };
+
+  const handlePrintPaperRequest = async (request: PaperRequest) => {
+    if (request.status !== 'approved') {
+      alert('Printing is only allowed for approved document requests.');
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      alert('Unable to open print window. Please check your popup blocker.');
+      return;
+    }
+
+    try {
+      printWindow.history.replaceState(null, '', '/print');
+      printWindow.document.title = '';
+    } catch (err) {
+      console.warn('Unable to normalize print URL:', err);
+    }
+
+    const controlNumber = request.control_number?.trim();
+    if (!controlNumber) {
+      alert('This approved request does not yet have a control number. Please approve it again or refresh the page.');
+      return;
+    }
+
+    printWindow.document.write(formatPrintableRequest({
+      ...request,
+      control_number: controlNumber,
+    }));
+    printWindow.document.close();
+    printWindow.focus();
+  };
+
+  const formatPrintableWalkIn = (data: {
+    paper_type: PaperRequest['paper_type'];
+    control_number?: string;
+    requester_name: string;
+    requester_address: string;
+    requester_phone: string;
+    request_reason: string;
+    sex?: string;
+    date_of_birth?: string;
+    place_of_birth?: string;
+    civil_status?: string;
+    nationality?: string;
+  }) => {
+    const title = data.paper_type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const requestedAt = new Date().toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const requesterName = data.requester_name || 'Unknown';
+    const address = data.requester_address || 'N/A';
+    const contact = data.requester_phone ? formatPhilippineMobile(data.requester_phone) : 'N/A';
+    const sex = data.sex || 'N/A';
+    const dob = data.date_of_birth || 'N/A';
+    const pob = data.place_of_birth || 'N/A';
+    const civilStatus = data.civil_status || 'N/A';
+    const nationality = data.nationality || 'N/A';
+    const controlNumber = data.control_number || 'N/A';
+    const reason = data.request_reason || 'N/A';
+    const documentParagraph = (() => {
+      if (data.paper_type === 'barangay_clearance') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is a bonafide resident of Barangay Tubigan. This Barangay Clearance is issued for the purpose of <span class="blank">${reason}</span>, and may be presented to any government office, employer, or institution requiring proof of good standing in the community.`;
+      }
+      if (data.paper_type === 'certificate_of_indigency') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is a resident of Barangay Tubigan who is in need of financial support. This Certificate of Indigency is issued for the purpose of <span class="blank">${reason}</span>, and is intended to attest to the individual's current economic condition for qualification to receive assistance, concessions, or benefits.`;
+      }
+      if (data.paper_type === 'proof_of_residency') {
+        return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, currently resides within Barangay Tubigan. This Proof of Residency is issued for the purpose of <span class="blank">${reason}</span>, and may be used to establish domicile for official transactions, school enrollment, or other legal requirements.`;
+      }
+      return `This is to certify that <span class="blank">${requesterName}</span>, of legal age, residing at <span class="blank">${address}</span>, contact number <span class="blank">${contact}</span>, is requesting this document for <span class="blank">${reason}</span>, based on the records maintained by Barangay Tubigan.`;
+    })();
+
+    return `
+      <html>
+        <head>
+          <title></title>
+          <style>
+            body { font-family: 'Times New Roman', Times, serif; margin: 32px; color: #111827; }
+            .header-row { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+            .control-number { font-size: 12px; color: #111827; font-weight: 700; letter-spacing: 0.06em; }
+            .control-number span { display: inline-block; min-width: 180px; text-align: right; }
+            .header { text-align: center; margin-bottom: 18px; }
+            .header h1 { font-size: 30px; margin: 0; letter-spacing: 0.12em; }
+            .header p { margin: 4px 0; color: #374151; font-size: 14px; }
+            .section { margin-bottom: 24px; }
+            .section h2 { font-size: 14px; margin-bottom: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #111827; }
+            .paragraph { margin-bottom: 18px; text-align: justify; line-height: 1.7; font-size: 14px; }
+            .blank { display: inline-block; min-width: 160px; border-bottom: 1px solid #111827; padding: 0 4px; font-weight: 700; }
+            .fields { margin-top: 12px; }
+            .field { margin-bottom: 10px; }
+            .field strong { display: inline-block; width: 180px; color: #111827; }
+            .signature-line { margin-top: 28px; }
+            .signature-line div { margin-bottom: 28px; }
+            .signature-line span { display: inline-block; min-width: 280px; border-bottom: 1px solid #111827; padding: 0 4px; }
+            .footer { margin-top: 34px; border-top: 1px solid #d1d5db; padding-top: 14px; color: #4b5563; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="header-row">
+            <div class="control-number"><strong>Control No.:</strong> <span>${controlNumber}</span></div>
+          </div>
+          <div class="header">
+            <p>Republic of the Philippines</p>
+            <p>Province of Pampanga</p>
+            <p>Municipality of Florinda</p>
+            <h1>Barangay Tubigan</h1>
+            <p>${title}</p>
+          </div>
+          <div class="section">
+            <p class="paragraph">
+              ${documentParagraph}
+            </p>
+            <p class="paragraph">
+              The above-named requester has the following information on file: sex <span class="blank">${sex}</span>, date of birth <span class="blank">${dob}</span>, place of birth <span class="blank">${pob}</span>, civil status <span class="blank">${civilStatus}</span>, and nationality <span class="blank">${nationality}</span>.
+            </p>
+            <p class="paragraph">
+              Issued this <span class="blank">${requestedAt}</span> in Barangay Tubigan, Florinda, Pampanga, for official use and approval of the appropriate barangay authorities.
+            </p>
+          </div>
+          <div class="section fields">
+            <div class="field"><strong>Document requested:</strong> <span class="blank">${title}</span></div>
+            <div class="field"><strong>Control number:</strong> <span class="blank">${controlNumber}</span></div>
+            <div class="field"><strong>Request reason:</strong> <span class="blank">${reason}</span></div>
+          </div>
+          <div class="section signature-line">
+            <div>
+              <strong>Prepared by:</strong> <span></span>
+            </div>
+            <div>
+              <strong>Approved by:</strong> <span></span>
+            </div>
+            <div>
+              <strong>Signature over printed name:</strong> <span></span>
+            </div>
+          </div>
+          <div class="footer">Generated from the Barangay Tubigan Florinda portal.</div>
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+  };
+
+  const getNextControlSequence = async (paperType: PaperRequest['paper_type']) => {
+    const { count, error } = await supabase
+      .from('paper_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('paper_type', paperType)
+      .eq('status', 'approved');
+    if (error) throw error;
+    return (count ?? 0) + 1;
+  };
+
+  const handlePrintWalkInDocument = async () => {
+    if (!walkInRequesterName.trim()) {
+      alert('Please provide the name for the walk-in document.');
+      return;
+    }
+    if (!walkInRequesterPhone.trim()) {
+      alert('Please provide a contact number for the walk-in document.');
+      return;
+    }
+    if (!walkInRequesterAddress.trim()) {
+      alert('Please provide an address for the walk-in document.');
+      return;
+    }
+    if (!walkInRequestReason.trim()) {
+      alert('Please provide the purpose or reason for the document.');
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      alert('Unable to open print window. Please check your popup blocker.');
+      return;
+    }
+
+    try {
+      printWindow.history.replaceState(null, '', '/print');
+      printWindow.document.title = '';
+    } catch (err) {
+      console.warn('Unable to normalize print URL:', err);
+    }
+
+    const sequence = await getNextControlSequence(walkInPaperType);
+    const controlNumber = formatControlNumber(walkInPaperType, sequence);
+    printWindow.document.write(
+      formatPrintableWalkIn({
+        paper_type: walkInPaperType,
+        control_number: controlNumber,
+        requester_name: walkInRequesterName,
+        requester_address: walkInRequesterAddress,
+        requester_phone: walkInRequesterPhone,
+        request_reason: walkInRequestReason,
+        sex: walkInSex,
+        date_of_birth: walkInDob,
+        place_of_birth: walkInPob,
+        civil_status: walkInCivilStatus,
+        nationality: walkInNationality,
+      })
+    );
+    printWindow.document.close();
+    try {
+      printWindow.history.replaceState(null, '', '/print');
+      printWindow.document.title = '';
+    } catch (err) {
+      console.warn('Unable to normalize print URL:', err);
+    }
+    printWindow.focus();
+  };
+
+  const handleClearWalkInForm = () => {
+    setWalkInPaperType('barangay_clearance');
+    setWalkInRequesterName('');
+    setWalkInRequesterAddress('');
+    setWalkInRequesterPhone('');
+    setWalkInRequestReason('');
+    setWalkInSex('');
+    setWalkInDob('');
+    setWalkInPob('');
+    setWalkInCivilStatus('');
+    setWalkInNationality('');
+  };
+
   const handleApprovePaperRequest = async (requestId: string) => {
     if (!confirm('Are you sure you want to approve this request in Documents Approval?')) return;
     try {
+      let selectedRequest = editingPaperRequest;
+      if (!selectedRequest) {
+        const { data, error: fetchError } = await supabase
+          .from('paper_requests')
+          .select('*')
+          .eq('id', requestId)
+          .single();
+        if (fetchError) throw fetchError;
+        selectedRequest = data as PaperRequest;
+      }
+
+      if (!selectedRequest) {
+        throw new Error('Unable to load the selected request for approval.');
+      }
+
+      let controlNumber = selectedRequest.control_number?.trim();
+      if (!controlNumber) {
+        const sequence = await getNextControlSequence(selectedRequest.paper_type);
+        controlNumber = formatControlNumber(selectedRequest.paper_type, sequence);
+      }
+
       const payload: any = {
         status: 'approved',
         updated_at: new Date().toISOString(),
       };
+      if (controlNumber) {
+        payload.control_number = controlNumber;
+      }
 
       const { error } = await supabase
         .from('paper_requests')
@@ -863,41 +1319,6 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
     } catch (error) {
       console.error('Supabase error details:', error);
       alert('Documents Approval: failed to approve. Please try again.');
-    }
-  };
-
-  // approve and mark as paid in one action (quick action)
-  const handleApproveAndMarkPaid = async (requestId: string) => {
-    const documentUrl = prompt('Enter document URL (optional, press Cancel to skip):');
-    if (documentUrl === null) {
-      // User cancelled, but they might want to proceed without URL
-      if (!confirm('Approve and mark as paid without document URL? You can add it later by editing.')) {
-        return;
-      }
-    }
-    
-    if (!confirm('Approve this request and mark payment as PAID?')) return;
-    
-    try {
-      const payload: any = {
-        status: 'approved',
-        payment_status: 'paid',
-        updated_at: new Date().toISOString(),
-      };
-      if (documentUrl?.trim()) {
-        payload.document_url = documentUrl.trim();
-      }
-
-      const { error } = await supabase
-        .from('paper_requests')
-        .update(payload)
-        .eq('id', requestId);
-      if (error) throw error;
-      await fetchPaperRequests();
-      alert('Request approved and marked as paid successfully!');
-    } catch (error) {
-      console.error('Error approving and marking paid:', error);
-      alert('Failed to approve and mark as paid. Please try again.');
     }
   };
 
@@ -1718,7 +2139,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.middle_name || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.suffix || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-blue-600 font-medium">{resident.email || 'N/A'}</td>
-                      <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.mobile_number || 'N/A'}</td>
+                      <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.mobile_number ? formatPhilippineMobile(resident.mobile_number) : 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.sex || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.civil_status || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.date_of_birth || 'N/A'}</td>
@@ -1726,7 +2147,7 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.nationality || 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.home_no || 'N/A'}</td>
                       <td className="px-5 py-4 border-r border-gray-200 text-sm text-gray-700">{resident.address || 'N/A'}</td>
-                      <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.contact_number || 'N/A'}</td>
+                      <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm text-gray-700">{resident.contact_number ? formatPhilippineMobile(resident.contact_number) : 'N/A'}</td>
                       <td className="px-5 py-4 whitespace-nowrap border-r border-gray-200 text-sm">
                         <span className={`px-3 py-2 text-xs font-bold rounded-lg transition-all shadow-sm ${
                           resident.role === 'admin'
@@ -1772,6 +2193,15 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                         >
                           View Selfie
                         </button>
+                        {(resident as any).pending_selfie_status === 'pending' && (
+                          <button
+                            onClick={() => openVerificationImage('Pending Selfie', (resident as any).pending_selfie_path)}
+                            className="ml-2 px-3 py-2 text-xs font-bold rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-all shadow-sm"
+                            title="View pending selfie"
+                          >
+                            View Pending
+                          </button>
+                        )}
                       </td>
                       <td className="px-5 py-4 whitespace-nowrap text-sm">
                         <div className="flex gap-2">
@@ -1820,6 +2250,24 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                               >
                                 <Trash2 className="w-5 h-5" />
                               </button>
+                              {(resident as any).pending_selfie_status === 'pending' && (
+                                <>
+                                  <button
+                                    onClick={() => handleApprovePendingSelfie(resident.id)}
+                                    className="p-2.5 text-green-600 bg-green-100 hover:bg-green-200 rounded-lg transition-all shadow-sm hover:shadow-md hover:scale-110"
+                                    title="Approve pending selfie"
+                                  >
+                                    Approve Photo
+                                  </button>
+                                  <button
+                                    onClick={() => handleRejectPendingSelfie(resident.id)}
+                                    className="p-2.5 text-red-700 bg-red-100 hover:bg-red-200 rounded-lg transition-all shadow-sm hover:shadow-md hover:scale-110"
+                                    title="Reject pending selfie"
+                                  >
+                                    Reject Photo
+                                  </button>
+                                </>
+                              )}
                             </>
                           )}
                         </div>
@@ -3065,8 +3513,8 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                               <div className="text-xs text-gray-500">
                                 {(booking.profiles as any)?.email || ''}
                               </div>
-                              <div className="text-xs text-gray-500">
-                                {(booking.profiles as any)?.contact_number || ''}
+                                <div className="text-xs text-gray-500">
+                                {formatPhilippineMobile((booking.profiles as any)?.contact_number) || ''}
                               </div>
                             </td>
                             <td className="px-6 py-4">
@@ -3267,8 +3715,148 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                 >
                   Done ({paperRequests.filter(r => r.status === 'completed').length})
                 </button>
+                <button
+                  onClick={() => {
+                    setShowWalkInPrintForm((prev) => !prev);
+                  }}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    showWalkInPrintForm
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  {showWalkInPrintForm ? 'Hide Walk-in Print' : 'Walk-in Print'}
+                </button>
               </div>
             </div>
+            {showWalkInPrintForm && (
+              <div className="bg-white rounded-xl shadow-sm border p-5 space-y-4">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-800">Walk-in Print for Document</h2>
+                    <p className="text-sm text-gray-500">Choose a paper type and complete the blanks for a walk-in resident printout.</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Document Type</label>
+                    <select
+                      value={walkInPaperType}
+                      onChange={(e) => setWalkInPaperType(e.target.value as PaperRequest['paper_type'])}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    >
+                      <option value="barangay_clearance">Barangay Clearance</option>
+                      <option value="certificate_of_indigency">Certificate of Indigency</option>
+                      <option value="proof_of_residency">Proof of Residency</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                    <input
+                      type="text"
+                      value={walkInRequesterName}
+                      onChange={(e) => setWalkInRequesterName(e.target.value.slice(0, 100))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Contact Number</label>
+                    <input
+                      type="tel"
+                      value={walkInRequesterPhone}
+                      onChange={(e) => setWalkInRequesterPhone(e.target.value.replace(/[^0-9+ ]/g, '').slice(0, 20))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
+                    <input
+                      type="text"
+                      value={walkInRequesterAddress}
+                      onChange={(e) => setWalkInRequesterAddress(e.target.value.slice(0, 150))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Reason / Purpose</label>
+                    <input
+                      type="text"
+                      value={walkInRequestReason}
+                      onChange={(e) => setWalkInRequestReason(e.target.value.slice(0, 150))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Sex</label>
+                    <input
+                      type="text"
+                      value={walkInSex}
+                      onChange={(e) => setWalkInSex(e.target.value.slice(0, 20))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Date of Birth</label>
+                    <input
+                      type="text"
+                      value={walkInDob}
+                      onChange={(e) => setWalkInDob(e.target.value.slice(0, 50))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                      placeholder="e.g. January 1, 1980"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Place of Birth</label>
+                    <input
+                      type="text"
+                      value={walkInPob}
+                      onChange={(e) => setWalkInPob(e.target.value.slice(0, 100))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Civil Status</label>
+                    <input
+                      type="text"
+                      value={walkInCivilStatus}
+                      onChange={(e) => setWalkInCivilStatus(e.target.value.slice(0, 50))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Nationality</label>
+                    <input
+                      type="text"
+                      value={walkInNationality}
+                      onChange={(e) => setWalkInNationality(e.target.value.slice(0, 50))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col md:flex-row gap-3 md:justify-end">
+                  <button
+                    onClick={() => {
+                      handleClearWalkInForm();
+                    }}
+                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handlePrintWalkInDocument}
+                    className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+                  >
+                    Print Walk-in Document
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="bg-white rounded-xl shadow-sm border">
               {filteredPaperRequests.length === 0 ? (
@@ -3336,8 +3924,8 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                               </div>
                               <div className="text-xs text-gray-500">
                                 {request.resident_id 
-                                  ? ((request.profiles as any)?.contact_number || '')
-                                  : (request.requester_phone || '')
+                                  ? formatPhilippineMobile((request.profiles as any)?.contact_number) || ''
+                                  : formatPhilippineMobile(request.requester_phone) || ''
                                 }
                               </div>
                               {!request.resident_id && (
@@ -3358,6 +3946,11 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                               {request.payment_code && (
                                 <div className="text-xs text-gray-500 mt-1">
                                   Code: <span className="font-mono">{request.payment_code}</span>
+                                </div>
+                              )}
+                              {request.request_reason && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  Reason: {request.request_reason}
                                 </div>
                               )}
                             </td>
@@ -3486,6 +4079,16 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                                     </button>
                                   </div>
                                 ) : null}
+                                <div className="flex gap-2 items-center pt-2">
+                                  <button
+                                    onClick={() => handlePrintPaperRequest(request)}
+                                    className="px-3 py-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center gap-1.5 rounded border border-slate-200 transition-colors"
+                                    title="Print request document"
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                    Print
+                                  </button>
+                                </div>
                               </div>
                             </td>
                           </tr>
@@ -3616,6 +4219,13 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                         </p>
                       )}
 
+                      {editingPaperRequest.request_reason && (
+                        <div className="mt-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                          <p className="text-sm font-medium text-gray-700">Reason</p>
+                          <p className="text-gray-900 text-sm mt-1">{editingPaperRequest.request_reason}</p>
+                        </div>
+                      )}
+
                       {editingPaperRequest.receipt_url && (
                         <p className="text-xs mt-2">
                           <a
@@ -3633,6 +4243,12 @@ export function AdminDashboard({ currentUser, onLogout }: AdminDashboardProps) {
                   </div>
 
                   <div className="flex justify-end gap-3">
+                    <button
+                      onClick={() => handlePrintPaperRequest(editingPaperRequest)}
+                      className="px-4 py-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 transition-colors"
+                    >
+                      Print
+                    </button>
                     <button
                       onClick={() => {
                         setEditingPaperRequest(null);
